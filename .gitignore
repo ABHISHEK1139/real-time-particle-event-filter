@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.env
+
+# MacOS
+.DS_Store
+
+# Temporary outputs
+temp/
+
+run_output.txt
+clean.txt
+
+*.joblib
+
+*.csv
+
+*.root

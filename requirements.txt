@@ -1,0 +1,12 @@
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+xgboost
+joblib
+pytest
+torch
+torch_geometric
+uproot
+awkward

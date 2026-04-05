@@ -1,0 +1,21 @@
+﻿≡ƒÜÇ Loading CERN Dimuon Collision Data...
+ΓÜí Preprocessing and creating labels...
+Γ£à Data prepared: 80000 training samples, 20000 testing samples.
+
+≡ƒƒó LEVEL 1: Standard Scikit-Learn Random Forest (CPU)
+  Γ₧£ Training Time:  1.1628s
+  Γ₧£ Inference Time: 0.0300s
+  Γ₧£ Accuracy:       99.20%
+
+≡ƒƒí LEVEL 2a: Optimized Random Forest (Reduced Estimators)
+  Γ₧£ Training Time:  0.3152s
+  Γ₧£ Inference Time: 0.0168s
+  Γ₧£ Accuracy:       99.16%
+
+≡ƒö┤ LEVEL 3: GPU-Accelerated XGBoost Classifier
+  Γ₧£ Training Time:  0.6919s
+  Γ₧£ Inference Time: 0.0308s
+  Γ₧£ Accuracy:       99.33%
+
+≡ƒöÑ Plotting Performance vs Accuracy Comparison...
+Γ£à Saved comparison graph as 'speed_comparison.png'
