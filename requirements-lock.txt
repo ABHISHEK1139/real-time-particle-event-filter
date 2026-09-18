@@ -1,0 +1,19 @@
+# Pinned reproduction snapshot — Windows local, 2026-09-18 (Python 3.12.10).
+# Generated from a successful end-to-end run (download -> train -> pytest 9 passed).
+# Docker uses Python 3.10; versions below are known-good, not strict platform pins.
+# Recreate with: pip install -r requirements-lock.txt
+pandas==2.3.3
+numpy==2.4.4
+matplotlib==3.11.0
+seaborn==0.13.2
+scikit-learn==1.9.0
+scipy==1.17.1
+xgboost==3.4.1
+joblib==1.6.0
+pytest==9.0.3
+torch==2.12.1
+torchvision==0.27.1
+torch-geometric==2.8.0.post1
+uproot==5.7.6
+awkward==2.13.0
+termcolor==3.3.0

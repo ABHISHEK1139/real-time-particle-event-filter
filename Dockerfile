@@ -1,6 +1,11 @@
 # Use an official Python runtime as a parent image
 FROM python:3.10-slim
 
+# Windows hosts default to cp1252, which crashed emoji prints; force UTF-8
+# everywhere so container logs match local runs.
+ENV PYTHONUTF8=1 \
+    PYTHONIOENCODING=utf-8
+
 # Set the working directory in the container
 WORKDIR /app
 
@@ -16,10 +21,5 @@ COPY . /app/
 # Create a volume for plots so they can be accessed outside the container
 VOLUME ["/app/plots"]
 
-# NOTE: No data (.csv/.root) or trained model (.joblib/.pt) is shipped in the
-# image. From a fresh clone you must first fetch data and train, e.g.:
-#   docker run --rm -v ${PWD}/plots:/app/plots cern-zboson-ml \
-#     sh -c "python src/data_download.py && python src/train_model.py"
-# Keeping the default command as training (not realtime_simulation) avoids a
-# guaranteed ModuleNotFound/FileNotFound failure on a clean checkout.
-CMD ["python", "src/train_model.py"]
+# Default command downloads data (if missing) and trains the model.
+CMD ["sh", "-c", "python src/data_download.py && python src/train_model.py"]

@@ -11,6 +11,10 @@ env/
 # MacOS
 .DS_Store
 
+# Test / cache outputs
+.pytest_cache/
+.hypothesis/
+
 # Temporary outputs
 temp/
 
@@ -22,5 +26,6 @@ clean.txt
 models/
 
 *.csv
+!Dimuon_DoubleMu.csv
 
 *.root

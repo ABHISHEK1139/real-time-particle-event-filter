@@ -1,3 +1,7 @@
+# Core runtime deps (flexible lower bounds for portability across CUDA/CPU wheels).
+# Tested 2026-09: Python 3.10 (Docker) / 3.12 (local), pandas 2.x, numpy 2.x,
+# scikit-learn 1.9, xgboost 3.x, torch 2.x + torch_geometric 2.8, uproot 5.x.
+# For a fully pinned repro, use requirements-lock.txt alongside results/metrics.md.
 pandas>=1.5
 numpy>=1.23
 matplotlib>=3.6
@@ -11,4 +15,3 @@ torch_geometric>=2.3
 uproot>=5.0
 awkward>=2.0
 termcolor>=2.0
-pyyaml>=6.0

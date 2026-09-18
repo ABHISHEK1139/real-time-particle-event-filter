@@ -13,8 +13,13 @@ python src/train_model.py     # trains XGBoost -> z_boson_xgb_model.joblib
 ```
 
 This procedure will:
-1. Parse the local CSV and construct the kinematic feature matrix
-   (`pt1, pt2, eta1, eta2, phi1, phi2`; invariant mass `M` is used only for labels/evaluation, never as a feature).
+1. Download the educational CSV, validate its schema/row count, and convert the
+   numeric branches to a CERN-native ROOT `TTree` (`Events`).
+   `src/train_model.py` and `src/train_gnn.py` read that **ROOT** file for
+   training, while `src/realtime_simulation.py` and `src/speed_analysis.py`
+   replay the **CSV** — both derive from the same download, and the kinematic
+   feature matrix is always (`pt1, pt2, eta1, eta2, phi1, phi2`; invariant mass
+   `M` is used only for labels/evaluation, never as a feature).
 2. Try XGBoost with `device='cuda'` and automatically fall back to CPU (`tree_method='hist'`) only when CUDA is genuinely unavailable or fails (other errors propagate instead of being misreported as "no GPU").
 3. Write the trained classifier to `z_boson_xgb_model.joblib` in the repository root and write benchmark metrics/plots to `results/` and `plots/`.
 

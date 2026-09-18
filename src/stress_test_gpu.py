@@ -6,12 +6,21 @@ it as physics-event throughput. Validates CUDA presence before the loop and
 supports --iterations for CI (default remains infinite until Ctrl+C).
 """
 import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import src._compat  # noqa: F401  (UTF-8 stdout guard; must stay before prints)
+from src._compat import data_path
+
 import pandas as pd
 import joblib
 import time
 from termcolor import colored
 
 FEATURES = ['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2']
+# 10M rows x 6 float64 columns ≈ 480 MB. Refuse clearly rather than OOM-kill.
+MAX_SYNTHETIC_ROWS = 20_000_000
 
 
 def main():
@@ -32,10 +41,11 @@ def main():
     except SystemExit:
         raise
     except Exception as e:
-        print(colored(f"⚠️ Could not query CUDA status: {e}", "yellow"))
+        print(colored(f"❌ Could not query CUDA status ({e}). Exiting.", "red"))
+        raise SystemExit(1)
 
     try:
-        model = joblib.load('z_boson_xgb_model.joblib')
+        model = joblib.load(data_path('z_boson_xgb_model.joblib'))
         try:
             model.set_params(device='cuda')
             print(colored("✅ Model loaded (requested CUDA).", "green"))
@@ -46,11 +56,16 @@ def main():
         raise SystemExit(1)
 
     try:
-        full_data = pd.read_csv("Dimuon_DoubleMu.csv").dropna()
+        full_data = pd.read_csv(data_path("Dimuon_DoubleMu.csv")).dropna()
         features = full_data[FEATURES]
         n_real = len(features)
+        n_synth = n_real * args.repeat
+        if n_synth > MAX_SYNTHETIC_ROWS:
+            print(colored(f"❌ Requested {n_synth:,} synthetic rows exceeds the "
+                          f"{MAX_SYNTHETIC_ROWS:,} safety cap (~1 GB). Lower --repeat.", "red"))
+            raise SystemExit(1)
         print(colored(f"📦 SYNTHETIC step: repeating {n_real:,} real rows x{args.repeat} "
-                       f"= {n_real*args.repeat:,} duplicated rows (NOT unique events)...", "yellow"))
+                       f"= {n_synth:,} duplicated rows (NOT unique events)...", "yellow"))
         massive_batch = pd.concat([features] * args.repeat, ignore_index=True)
     except FileNotFoundError:
         print(colored("❌ Dimuon_DoubleMu.csv not found. Run data_download.py first.", "red"))

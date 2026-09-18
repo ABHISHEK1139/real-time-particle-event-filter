@@ -1,11 +1,24 @@
 # Physics Filtering Benchmark
 
-**Target Background Noise Budget**: 5.0%
+> Supervised demonstration of learning a Z-mass-window (80<M<100 GeV)
+> selection from muon kinematics. Labels are a deterministic function of M;
+> features already encode M. Not a trigger/discovery benchmark.
 
-### Architectures
-| Architecture | Signal Efficiency (Target Z Bosons Caught) |
-|---|---|
-| Rule-Based Cut (pT threshold) | **95.52%** |
-> Result: The ML pipeline improves signal detection by **+4.48%** compared to naive theoretical bounds at the exact same noise acceptance rate.
+**Target Background Acceptance Budget**: 5.0%
 
-*Note on the 100.00% Metric: The Z-Boson resonance peak (at ~91 GeV) is kinematically very clean and distinct from the localized background in this curated educational Open Data sample. Therefore, given a 5% background leakage tolerance, achieving near-perfect kinematic signal separation is statistically expected on this specific dataset and should not be misconstrued as typical of noisy, raw L1 hardware trigger environments.*
+**Protocol**: stratified 60/20/20 train/val/test; thresholds fit on
+TRAIN (baseline) or VALIDATION (ML) and measured once on frozen TEST.
+
+### Architectures (TEST set, frozen)
+| Architecture | Signal Efficiency @5% bg | AUROC | AUPRC | Acc@0.5 |
+|---|---|---|---|---|
+| Rule-Based Cut (pT_lead >= 23.16 GeV) | **96.71%** | — | — | — |
+| Kinematic ML Classifier (XGBoost) | **100.00%** | 0.9981 | 0.9456 | 99.17% |
+
+TEST background retained: baseline 4.99%, ML 4.87% (target 5.0%).
+
+TEST confusion @0.5: TN=18850 FP=115 FN=50 TP=985.
+
+Dummy (all-background) accuracy on TEST would be 94.83%; accuracy alone is misleading under this class imbalance — prefer AUROC/AUPRC above.
+
+> Result: at the same ≈5% background acceptance, ML signal efficiency (100.00%) vs naive pT cut (96.71%): **+3.29pp** difference on frozen TEST.

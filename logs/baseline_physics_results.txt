@@ -1,11 +1,11 @@
-﻿≡ƒö¼ [EXPERIMENT: PURE PHYSICS BASELINE]
-Executing a deterministic hard-cut on Invariant Mass (M) to explicitly evaluate mathematical data leakage.
+🔬 [EXPERIMENT: PURE PHYSICS BASELINE]
+Deterministic 80<M<100 cut vs itself = 100% by construction (ceiling).
 
-Γ£à Loaded 100000 events.
+✅ Loaded 100000 events.
 
 ==========================================
-≡ƒÄ» Pure Mass (M) Cut Accuracy: 100.0000%
-ΓÅ▒∩╕Å Cut Execution Time: 0.0413 seconds
+🎯 Pure Mass (M) Cut Accuracy: 100.0000% (tautology: cut == label)
+⏱️ Cut Execution Time: 0.0206 seconds
 ==========================================
 
 [Classification Report]
@@ -19,6 +19,7 @@ Executing a deterministic hard-cut on Invariant Mass (M) to explicitly evaluate 
 weighted avg       1.00      1.00      1.00    100000
 
 
-≡ƒô¥ CONCLUSION:
-This perfectly deterministic 100% accuracy (or ~99.30% if predicting off subsets) represents the theoretical ceiling of the dataset.
-Any ML model acting on (pt, eta, phi) that achieves ~99.33% is effectively reconstructing 'M' geometrically.
+📝 CONCLUSION:
+This 100% is the ceiling BY CONSTRUCTION (same rule defines labels).
+An ML model on (pt, eta, phi) scoring ~99% is reconstructing M geometrically,
+not discovering new physics. Compare models via AUROC/AUPRC in results/metrics.md.
