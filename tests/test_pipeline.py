@@ -44,11 +44,17 @@ def dataset():
 @pytest.fixture
 def model(dataset):
     if os.path.exists(MODEL_PATH):
-        return joblib.load(MODEL_PATH)
+        m = joblib.load(MODEL_PATH)
+        if hasattr(m, 'set_params'):
+            try:
+                m.set_params(device='cpu')
+            except Exception:
+                pass
+        return m
     # Train a tiny model on the (possibly synthetic) fixture so inference tests run everywhere
     from xgboost import XGBClassifier
     X, y, _ = build_features_and_labels(dataset)
-    m = XGBClassifier(n_estimators=10, tree_method='hist', n_jobs=1, random_state=42)
+    m = XGBClassifier(n_estimators=10, tree_method='hist', n_jobs=1, random_state=42, device='cpu')
     m.fit(X, y)
     return m
 
@@ -57,7 +63,8 @@ def test_data_schema(dataset):
     expected_features = ['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2', 'M']
     for f in expected_features:
         assert f in dataset.columns, f"Critical feature {f} missing from payload."
-    assert (dataset['pt1'] >= 0).all(), "Transverse momentum cannot be negative."
+    assert (dataset['pt1'] >= 0).all(), "Transverse momentum pt1 cannot be negative."
+    assert (dataset['pt2'] >= 0).all(), "Transverse momentum pt2 cannot be negative."
 
 
 def test_feature_builder(dataset):
@@ -95,8 +102,11 @@ def test_stratified_split_preserves_signal_fraction():
         assert abs(np.mean(np.asarray(split) == 1) - base) < 0.05
 
 
-def test_threshold_calibration_no_test_leakage():
+def test_threshold_calibration_no_test_leakage(tmp_path, monkeypatch):
     """Thresholds fit on val/train must be applied frozen to test (protocol regression test)."""
+    # evaluate_ml_model saves plots/ + evaluate writes nothing else, so isolate
+    # cwd: without this, pytest overwrote the repo's real plots with synthetic figures.
+    monkeypatch.chdir(tmp_path)
     df = _synthetic_physics_df(2000)
     X, y, dfl = build_features_and_labels(df)
     X_tr, X_va, X_te, y_tr, y_va, y_te, df_tr, _, df_te = \
@@ -160,3 +170,90 @@ def test_realtime_pipeline_runs_on_synthetic(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     from src import realtime_simulation as rs
     rs.simulate_realtime_stream(batch_size=200, max_batches=2)  # must not raise
+
+
+def test_realtime_pipeline_edge_cases(tmp_path, monkeypatch):
+    """Verify realtime simulation handles max_batches=0 and empty datasets gracefully."""
+    pytest.importorskip("joblib")
+    from xgboost import XGBClassifier
+    df = _synthetic_physics_df(100)
+    X, y, _ = build_features_and_labels(df)
+    m = XGBClassifier(n_estimators=5, tree_method='hist', n_jobs=1, random_state=42)
+    m.fit(X, y)
+    joblib.dump(m, str(tmp_path / "z_boson_xgb_model.joblib"))
+    monkeypatch.chdir(tmp_path)
+    from src import realtime_simulation as rs
+
+    # Case 1: max_batches = 0
+    df.to_csv(str(tmp_path / "Dimuon_DoubleMu.csv"), index=False)
+    rs.simulate_realtime_stream(batch_size=50, max_batches=0)
+
+    # Case 2: empty DataFrame (0 events, must not ZeroDivisionError)
+    df.iloc[:0].to_csv(str(tmp_path / "Dimuon_DoubleMu.csv"), index=False)
+    rs.simulate_realtime_stream(batch_size=50)
+
+
+def test_confusion_matrix_single_class():
+    """Verify confusion matrix does not drop TN when all predictions belong to single class."""
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix([0, 0, 0], [0, 0, 0], labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel().tolist()
+    assert (tn, fp, fn, tp) == (3, 0, 0, 0)
+
+
+def test_anomaly_detection_pipeline(tmp_path, monkeypatch):
+    """Verify unsupervised anomaly detection trains and evaluates cleanly without mass labels."""
+    monkeypatch.chdir(tmp_path)
+    from src.anomaly_detection import train_anomaly_detector, evaluate_anomaly_detector
+
+    df = _synthetic_physics_df(600)
+    X, y, _ = build_features_and_labels(df)
+    # Train anomaly detector on pseudo-background (first 300 events)
+    iso, scaler = train_anomaly_detector(X.iloc[:300])
+    # Evaluate on val and test splits
+    metrics = evaluate_anomaly_detector(
+        iso, scaler,
+        X.iloc[300:450], y.iloc[300:450],
+        X.iloc[450:], y.iloc[450:],
+        budget=0.10
+    )
+    assert 0.0 <= metrics['sig_eff'] <= 1.0
+    assert 0.0 <= metrics['bg_retained'] <= 1.0
+    assert 0.0 <= metrics['auroc'] <= 1.0
+    assert os.path.exists(tmp_path / "plots" / "7_anomaly_detection_roc.png")
+
+
+def test_plot_mass_spectrum(tmp_path, monkeypatch):
+    """Verify mass spectrum reconstruction generates output without errors."""
+    monkeypatch.chdir(tmp_path)
+    from src.plot_mass_spectrum import plot_invariant_mass_spectrum
+
+    df = _synthetic_physics_df(400)
+    csv_file = str(tmp_path / "Dimuon_DoubleMu.csv")
+    df.to_csv(csv_file, index=False)
+
+    out_png = str(tmp_path / "test_spectrum.png")
+    result = plot_invariant_mass_spectrum(csv_file=csv_file, model_file="nonexistent.joblib", output_path=out_png)
+    assert os.path.exists(result)
+    assert os.path.getsize(result) > 1000
+
+
+def test_native_xgboost_json_export(tmp_path):
+    """Verify XGBoost native JSON format saves and loads without corruption."""
+    from xgboost import XGBClassifier
+    df = _synthetic_physics_df(100)
+    X, y, _ = build_features_and_labels(df)
+    m = XGBClassifier(n_estimators=5, tree_method='hist', n_jobs=1, random_state=42)
+    m.fit(X, y)
+
+    json_path = str(tmp_path / "model.json")
+    m.save_model(json_path)
+    assert os.path.exists(json_path)
+
+    m2 = XGBClassifier()
+    m2.load_model(json_path)
+    preds1 = m.predict_proba(X)
+    preds2 = m2.predict_proba(X)
+    np.testing.assert_allclose(preds1, preds2, rtol=1e-5)
+
+

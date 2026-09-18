@@ -12,8 +12,16 @@ analysis. Previously the repo mixed this up with the Run2010B sample
 Both were wrong for this data; the correct energy here is 7 TeV.
 """
 import os
+import sys
 import time
+import socket
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import src._compat  # noqa: F401  (UTF-8 stdout guard; must stay before prints)
+from src._compat import ROOT
+
 import pandas as pd
 import numpy as np
 import uproot
@@ -24,8 +32,8 @@ DATA_URLS = [
     "https://opendata.cern.ch/record/5201/files/Dimuon_DoubleMu.csv",
     "https://opendata.cern.ch/record/545/files/Dimuon_DoubleMu.csv",
 ]
-CSV_FILE = "Dimuon_DoubleMu.csv"
-ROOT_FILE = "Dimuon_DoubleMu.root"
+CSV_FILE = str(ROOT / "Dimuon_DoubleMu.csv")
+ROOT_FILE = str(ROOT / "Dimuon_DoubleMu.root")
 
 REQUIRED_COLUMNS = {'pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2', 'M'}
 # Sanity bounds for the educational sample (M selection is 0.3-300 GeV upstream,
@@ -36,14 +44,30 @@ MIN_FILE_BYTES = 100_000
 
 def _download_with_retry(dest, urls=DATA_URLS, retries=3, timeout=120):
     last_err = None
+    tmp_dest = dest + ".tmp"
     for url in urls:
         for attempt in range(1, retries + 1):
             try:
                 print(f"📥 Downloading {url} (attempt {attempt}/{retries})...")
-                urllib.request.urlretrieve(url, dest)
+                # urlretrieve takes no timeout arg, so bound the socket instead;
+                # without this the `timeout` parameter was silently ignored and
+                # a stalled mirror could hang forever.
+                old_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(timeout)
+                try:
+                    urllib.request.urlretrieve(url, tmp_dest)
+                finally:
+                    socket.setdefaulttimeout(old_timeout)
+                if os.path.exists(tmp_dest):
+                    os.replace(tmp_dest, dest)
                 return url
             except Exception as e:  # network errors: retry, then try next mirror
                 last_err = e
+                if os.path.exists(tmp_dest):
+                    try:
+                        os.remove(tmp_dest)
+                    except OSError:
+                        pass
                 print(f"⚠️ Download failed ({e}); retrying...")
                 time.sleep(2 * attempt)
     raise RuntimeError(f"Failed to fetch dataset from all mirrors {urls}: {last_err}")
@@ -58,7 +82,8 @@ def _validate_csv(path):
     if missing:
         raise ValueError(f"CSV schema validation failed; missing columns {sorted(missing)}; got {list(df.columns)}")
     # Full read for row-count check
-    n = sum(1 for _ in open(path, 'rb')) - 1
+    with open(path, 'rb') as fh:
+        n = sum(1 for _ in fh) - 1
     if n < MIN_ROWS:
         raise ValueError(f"CSV has only {n} rows (< {MIN_ROWS}); likely incomplete.")
     return True
@@ -67,17 +92,26 @@ def _validate_csv(path):
 def download_and_convert():
     print("🌍 Connecting to CERN Open Data Portal (Run2011A DoubleMu, 7 TeV)...")
 
-    if not os.path.exists(CSV_FILE):
+    needs_download = not os.path.exists(CSV_FILE)
+    if not needs_download:
+        print(f"✅ CSV '{CSV_FILE}' already present; validating...")
+        try:
+            _validate_csv(CSV_FILE)
+            print("✅ CSV integrity/schema check passed.")
+        except ValueError as e:
+            print(f"⚠️ Existing CSV '{CSV_FILE}' is invalid or truncated ({e}). Re-downloading...")
+            try:
+                os.remove(CSV_FILE)
+            except OSError:
+                pass
+            needs_download = True
+
+    if needs_download:
         print("📥 Downloading educational Dimuon sample (~14MB, 100k events)...")
         _download_with_retry(CSV_FILE)
         print(f"🎉 Acquired CSV payload -> {CSV_FILE}")
-    else:
-        print(f"✅ CSV '{CSV_FILE}' already present; validating...")
-
-    # Integrity + schema validation: a truncated/corrupt file must FAIL LOUDLY,
-    # never be treated as valid for downstream training.
-    _validate_csv(CSV_FILE)
-    print("✅ CSV integrity/schema check passed.")
+        _validate_csv(CSV_FILE)
+        print("✅ CSV integrity/schema check passed.")
 
     if not os.path.exists(ROOT_FILE):
         print("⚙️ Converting to CERN-native '.root' (TTree 'Events')...")

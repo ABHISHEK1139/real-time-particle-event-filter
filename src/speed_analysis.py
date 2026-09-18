@@ -7,7 +7,14 @@ synchronisation, and median/p95 over repeats. RF numbers are kept only as a
 separate architecture reference. Output goes to plots/speed_comparison.png
 (not repo root) so committed figures don't go stale.
 """
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import src._compat  # noqa: F401  (UTF-8 stdout guard; must stay before prints)
+from src._compat import data_path
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -49,12 +56,16 @@ def timed_predict(model, X, repeats=N_REPEATS, warmup=WARMUP):
 def main():
     print("🚀 Loading CERN Dimuon Collision Data (Run2011A DoubleMu, 7 TeV educational sample)...")
     try:
-        data = pd.read_csv("Dimuon_DoubleMu.csv")
+        data = pd.read_csv(data_path("Dimuon_DoubleMu.csv"))  # cwd first, repo root fallback
     except FileNotFoundError:
         print("❌ Cannot find 'Dimuon_DoubleMu.csv'. Run python src/data_download.py first.")
         raise SystemExit(1)
 
     data = data.dropna()
+    required = set(FEATURES) | {'M'}
+    missing = required - set(data.columns)
+    if missing:
+        raise ValueError(f"CSV missing required columns: {sorted(missing)}")
     print("⚡ Preprocessing and creating labels (1 = 80<M<100, else 0)...")
     data['label'] = data['M'].apply(lambda x: 1 if 80 < x < 100 else 0)
     X = data[FEATURES]
@@ -72,6 +83,11 @@ def main():
         s = time.time()
         model.fit(X_train, y_train)
         train_t = time.time() - s
+        if hasattr(model, 'set_params'):
+            try:
+                model.set_params(device='cpu')
+            except Exception:
+                pass
         preds = model.predict(X_bench)
         acc = accuracy_score(y_bench, preds)
         try:
@@ -105,7 +121,7 @@ def main():
     fig, ax1 = plt.subplots(figsize=(10, 6))
     color = 'tab:red'
     ax1.set_xlabel('Model', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Median inference latency, 5k events (ms)', color=color, fontsize=12, fontweight='bold')
+    ax1.set_ylabel(f'Median inference latency, {len(X_bench)} events (ms)', color=color, fontsize=12, fontweight='bold')
     ax1.bar(models, meds, color=color, alpha=0.6, width=0.4)
     ax1.tick_params(axis='y', labelcolor=color)
     plt.setp(ax1.get_xticklabels(), rotation=15, ha='right')
@@ -119,6 +135,7 @@ def main():
     plt.title('Inference latency (median of 20, warmed up) vs Accuracy', fontsize=14, fontweight='bold')
     fig.tight_layout()
     plt.savefig('plots/speed_comparison.png')
+    plt.close(fig)
     print("✅ Saved to plots/speed_comparison.png (warmup + median/p95; identical data slice)")
 
 

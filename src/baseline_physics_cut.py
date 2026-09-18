@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import src._compat  # noqa: F401  (UTF-8 stdout guard; must stay before prints)
+from src._compat import data_path
+
 import pandas as pd
 from sklearn.metrics import accuracy_score, classification_report
 import time
@@ -7,10 +14,6 @@ import time
 # keep it importable with zero new dependencies.
 CONFIG = {
     'mass_window': (80.0, 100.0),
-    'background_budget': 0.05,
-    'random_state': 42,
-    'test_size': 0.2,
-    'val_size': 0.2,
 }
 
 
@@ -19,12 +22,14 @@ def run_physics_baseline(csv="Dimuon_DoubleMu.csv"):
     print("Deterministic 80<M<100 cut vs itself = 100% by construction (ceiling).\n")
 
     try:
-        data = pd.read_csv(csv)
+        data = pd.read_csv(data_path(csv))  # cwd first, repo root fallback
     except FileNotFoundError:
         print("❌ Dataset not found. Run python src/data_download.py first.")
         raise SystemExit(1)
 
     data = data.dropna()
+    if 'M' not in data.columns:
+        raise ValueError("Dataset missing required invariant mass column 'M'.")
     print(f"✅ Loaded {len(data)} events.\n")
     lo, hi = CONFIG['mass_window']
     y_true = data['M'].apply(lambda x: 1 if lo < x < hi else 0)

@@ -7,7 +7,14 @@ whole loop and called total_time/total_events 'average latency' — that is
 replay throughput, not inference latency. Both are now reported honestly.
 Also validates the model's actual device instead of assuming CUDA.
 """
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import src._compat  # noqa: F401  (UTF-8 stdout guard; must stay before prints)
+from src._compat import data_path
+
 import pandas as pd
 import numpy as np
 import joblib
@@ -16,6 +23,8 @@ from termcolor import colored
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | streaming_engine | %(message)s')
 FEATURES = ['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2']
+MODEL_FILE = 'z_boson_xgb_model.joblib'
+CSV_FILE = 'Dimuon_DoubleMu.csv'
 
 
 def _model_device_info(model):
@@ -40,12 +49,33 @@ def _model_device_info(model):
     return info
 
 
+def _align_inference_device(model):
+    """Silence XGBoost 3.x's CPU/GPU DMatrix fallback warning on CUDA-less hosts.
+
+    A booster trained with ``device='cuda'`` warns on every ``predict`` when
+    the input lives on CPU. If this host has no CUDA, switch the (already
+    trained) booster back to CPU inference — weights are unchanged.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return model
+    except Exception:
+        pass
+    try:
+        model.set_params(device='cpu')
+    except Exception:
+        pass
+    return model
+
+
 def simulate_realtime_stream(batch_size=50000, max_batches=None):
     print(colored("\n📡 OFFLINE BATCH REPLAY: CERN collision-data inference simulation...", "cyan", attrs=['bold']))
     print(colored("   (static CSV replay in chunks — no live queue/socket/Kafka/trigger interface)", "cyan"))
 
     try:
-        model = joblib.load('z_boson_xgb_model.joblib')
+        model = joblib.load(data_path(MODEL_FILE))  # cwd first, repo root fallback
+        model = _align_inference_device(model)
         print(colored("✅ XGBoost Model Loaded successfully.", "green"))
     except FileNotFoundError:
         print(colored("❌ CRITICAL: z_boson_xgb_model.joblib not found. Run: python src/data_download.py && python src/train_model.py", "red"))
@@ -55,7 +85,12 @@ def simulate_realtime_stream(batch_size=50000, max_batches=None):
         print(f"   device info | {k}: {v}")
 
     try:
-        full_data = pd.read_csv("Dimuon_DoubleMu.csv").dropna()
+        full_data = pd.read_csv(data_path(CSV_FILE)).dropna()
+        required = set(FEATURES) | {'M'}
+        missing = required - set(full_data.columns)
+        if missing:
+            print(colored(f"❌ CRITICAL: CSV missing required columns: {sorted(missing)}", "red"))
+            raise ValueError(f"CSV missing required columns: {sorted(missing)}")
         features_only = full_data[FEATURES]
         y_true = ((full_data['M'] > 80) & (full_data['M'] < 100)).astype(int).values
     except FileNotFoundError:
@@ -68,15 +103,17 @@ def simulate_realtime_stream(batch_size=50000, max_batches=None):
     tp = fp = fn = tn = 0
 
     # Warmup (excluded from timings) to avoid counting CUDA/model init overhead
-    warm = features_only.iloc[:min(1000, len(features_only))]
-    try:
-        model.predict(warm)
-    except Exception:
-        pass
+    if len(features_only) > 0:
+        warm = features_only.iloc[:min(1000, len(features_only))]
+        try:
+            model.predict(warm)
+        except Exception:
+            pass
 
     t_prep = t_inf = t_post = 0.0
     start_global = time.perf_counter()
     n_batches = 0
+    processed = 0
     for i in range(0, total_events, batch_size):
         if max_batches is not None and n_batches >= max_batches:
             break
@@ -100,15 +137,18 @@ def simulate_realtime_stream(batch_size=50000, max_batches=None):
         t_inf += (t2 - t1)
         t_post += (t3 - t2)
         n_batches += 1
+        processed += len(batch_features)
 
         inf_ms = (t2 - t1) * 1000
         status = colored(f"[BATCH PROCESSED] {len(batch_features)} Events | Signals: {signals_in_batch}", "green", attrs=['bold'])
         logging.info(f"Batch {n_batches} | Inference: {inf_ms:.2f}ms | {status}")
 
     total_time = time.perf_counter() - start_global
-    processed = min(total_events, (max_batches * batch_size) if max_batches else total_events)
     eff = tp / max(tp + fn, 1)
     fpr = fp / max(fp + tn, 1)
+    throughput = (processed / total_time) if total_time > 0 else 0.0
+    latency_ms = ((t_inf / processed) * 1000) if processed > 0 else 0.0
+
     print(colored("\n=============================================", "cyan"))
     print(colored("🏁 BATCH REPLAY SUMMARY (offline, not a live trigger)", "cyan", attrs=['bold']))
     print(colored(f"     Total Events Processed : {processed:,}", "white"))
@@ -116,9 +156,9 @@ def simulate_realtime_stream(batch_size=50000, max_batches=None):
     print(colored(f"     TP={tp:,} FP={fp:,} FN={fn:,} TN={tn:,}", "white"))
     print(colored(f"     Signal efficiency (recall): {eff*100:.2f}% | FPR: {fpr*100:.2f}%", "white"))
     print(colored(f"     Wall-clock total       : {total_time:.4f}s", "white"))
-    print(colored(f"     Replay throughput      : {processed/total_time:,.0f} events/s", "white"))
+    print(colored(f"     Replay throughput      : {throughput:,.0f} events/s", "white"))
     print(colored(f"     Breakdown — prep: {t_prep:.3f}s | inference: {t_inf:.3f}s | post: {t_post:.3f}s", "white"))
-    print(colored(f"     Pure inference latency : {(t_inf/processed)*1000:.6f} ms/event", "white"))
+    print(colored(f"     Pure inference latency : {latency_ms:.6f} ms/event", "white"))
     print(colored("=============================================\n", "cyan"))
 
 
