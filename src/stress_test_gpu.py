@@ -1,54 +1,78 @@
+"""Sustained GPU stress test (SYNTHETIC workload — NOT 10M unique collisions).
+
+Builds a large batch by repeating the real feature rows 100x (~10M rows).
+Useful as a software/GPU saturation test only; never present throughput on
+it as physics-event throughput. Validates CUDA presence before the loop and
+supports --iterations for CI (default remains infinite until Ctrl+C).
+"""
+import argparse
 import pandas as pd
 import joblib
 import time
-import xgboost as xgb
 from termcolor import colored
 
+FEATURES = ['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2']
+
+
 def main():
-    print(colored("🚀 INITIATING SUSTAINED GPU STRESS TEST...", "cyan", attrs=['bold']))
-    
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--iterations', type=int, default=0, help='0 = infinite until Ctrl+C')
+    ap.add_argument('--repeat', type=int, default=100, help='duplication factor for synthetic batch')
+    args = ap.parse_args()
+
+    print(colored("🚀 GPU STRESS TEST (synthetic duplicated payload)...", "cyan", attrs=['bold']))
+
+    try:
+        import torch
+        cuda = torch.cuda.is_available()
+        print(f"   torch CUDA available: {cuda}" + (f" | {torch.cuda.get_device_name(0)}" if cuda else ""))
+        if not cuda:
+            print(colored("⚠️ No CUDA device visible — this test is meaningless on CPU at 10M rows. Exiting.", "yellow"))
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(colored(f"⚠️ Could not query CUDA status: {e}", "yellow"))
+
     try:
         model = joblib.load('z_boson_xgb_model.joblib')
-        # Enforce GPU parameters for Inference specifically (XGBoost defaults to CPU for inference if not explicit)
-        model.set_params(device='cuda')
-        print(colored("✅ XGBoost Model Loaded successfully (Forced CUDA Device).", "green"))
-    except Exception as e:
-        print(colored(f"❌ CRITICAL Error loading model: {e}", "red"))
-        return
+        try:
+            model.set_params(device='cuda')
+            print(colored("✅ Model loaded (requested CUDA).", "green"))
+        except Exception as e:
+            print(colored(f"⚠️ Model loaded but device='cuda' not accepted: {e}", "yellow"))
+    except FileNotFoundError:
+        print(colored("❌ z_boson_xgb_model.joblib not found. Run train_model.py first.", "red"))
+        raise SystemExit(1)
 
     try:
         full_data = pd.read_csv("Dimuon_DoubleMu.csv").dropna()
-        features = full_data[['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2']]
-        
-        # MASSIVE Dataset amplification (duplicate 100x to make 10,000,000 rows payload)
-        print(colored("📦 Duplicating payload to 10 MILLION events to force GPU saturation...", "yellow"))
-        massive_batch = pd.concat([features] * 100, ignore_index=True)
-        
-    except Exception as e:
-        print(colored(f"❌ CRITICAL Data error: {e}", "red"))
-        return
+        features = full_data[FEATURES]
+        n_real = len(features)
+        print(colored(f"📦 SYNTHETIC step: repeating {n_real:,} real rows x{args.repeat} "
+                       f"= {n_real*args.repeat:,} duplicated rows (NOT unique events)...", "yellow"))
+        massive_batch = pd.concat([features] * args.repeat, ignore_index=True)
+    except FileNotFoundError:
+        print(colored("❌ Dimuon_DoubleMu.csv not found. Run data_download.py first.", "red"))
+        raise SystemExit(1)
 
-    print(colored("🚨 STARTING CONTINUOUS GPU INFERENCE LOOP!", "red", attrs=['blink', 'bold']))
-    print(colored("👉 OPEN TASK MANAGER NOW! Look at the GPU tab.", "yellow"))
-    print(colored("👉 If you are on Windows, click the arrow above the GPU graph and change '3D' to 'Cuda' or 'Compute_0' to see ML loads!", "magenta", attrs=['bold']))
-    print("Press Ctrl+C to stop...\n")
-    
-    time.sleep(2)
-
+    print(colored("🚨 STARTING INFERENCE LOOP (Ctrl+C to stop).", "red", attrs=['bold']))
+    time.sleep(1)
     try:
         iteration = 1
         while True:
             start_t = time.perf_counter()
-            # Feed 10 Million events to the GPU at once
             _ = model.predict(massive_batch)
             inf_time = time.perf_counter() - start_t
-            
             throughput = len(massive_batch) / inf_time
-            print(f"🔄 Loop #{iteration} | 10,000,000 events processed in {inf_time:.2f}s | Throughput: {throughput:,.0f} events/sec")
+            print(f"🔄 Loop #{iteration} | {len(massive_batch):,} duplicated rows in {inf_time:.2f}s | "
+                  f"Throughput: {throughput:,.0f} rows/s (synthetic)")
             iteration += 1
-            
+            if args.iterations and iteration > args.iterations:
+                break
     except KeyboardInterrupt:
         print(colored("\n🛑 STRESS TEST STOPPED BY USER.", "red", attrs=['bold']))
+
 
 if __name__ == "__main__":
     main()

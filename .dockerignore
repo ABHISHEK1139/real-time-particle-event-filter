@@ -1,0 +1,21 @@
+# .dockerignore — .gitignore does NOT control the Docker build context,
+# so explicitly exclude large/local artifacts here.
+__pycache__/
+*.py[cod]
+.git/
+.github/
+venv/
+env/
+.env
+temp/
+*.csv
+*.root
+*.joblib
+*.pt
+models/
+run_output.txt
+clean.txt
+plots/
+results/
+logs/
+.DS_Store

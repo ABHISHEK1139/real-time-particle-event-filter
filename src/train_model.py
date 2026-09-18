@@ -1,15 +1,34 @@
+"""Supervised demonstration of learning a Z-mass-window selection from muon kinematics.
+
+Scope (honest): labels are `1 if 80 < M < 100 else 0` while features
+(pt/eta/phi) mathematically determine M. The model therefore learns an
+approximation to a known deterministic selection — it does NOT discover an
+unknown Z signature. Educational CERN Open Data only (Run2011A DoubleMu,
+7 TeV, record 5201; parent record 545).
+
+Experimental protocol (fixed):
+  TRAIN (60%) -> fit model / fit baseline cut
+  VALIDATION (20%) -> calibrate thresholds for 5% background acceptance
+  TEST (20%, frozen) -> report signal efficiency, AUROC/AUPRC, confusion matrix
+Stratified splits throughout. Thresholds are NEVER fit on TEST.
+"""
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix, classification_report,
+    roc_curve, auc, average_precision_score, precision_recall_curve,
+)
 import joblib
 import time
 import os
 
 FEATURES = ['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2']
+RANDOM_STATE = 42
+
 
 def load_data(filepath="Dimuon_DoubleMu.root", max_rows=None):
     """Loads ROOT TTree binary format using uproot."""
@@ -33,6 +52,7 @@ def load_data(filepath="Dimuon_DoubleMu.root", max_rows=None):
         print("❌ uproot library missing. Please install dependencies.")
         raise
 
+
 def build_features_and_labels(df):
     """Constructs the kinematic features and implicit labels (Z Boson peak 80 < M < 100)."""
     # Labeling: Signal = 1 (Z Boson, roughly 80 < M < 100 GeV), Background = 0
@@ -40,126 +60,214 @@ def build_features_and_labels(df):
     df['label'] = df['M'].apply(lambda x: 1 if 80 < x < 100 else 0)
     return df[FEATURES], df['label'], df
 
+
+def _is_cuda_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    keywords = ("cuda", "gpu", "device", "libcuda", "ptx", "nvml",
+                "no cuda", "cuda error", "xgboosterror", "device='cuda'",
+                'device "cuda"', "thrust", "nccl")
+    return any(k in msg for k in keywords)
+
+
 def train_xgboost(X_train, y_train):
-    """Trains an XGBoost classifier with GPU fallback mechanisms."""
-    print("\n⚡ Starting Model Training with XGBoost (GPU Optimized)...")
+    """Trains an XGBoost classifier, trying CUDA but only falling back on genuine CUDA errors."""
+    print("\n⚡ Starting Model Training with XGBoost (GPU attempt, CPU fallback)...")
     try:
-        model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.1, tree_method='hist', device='cuda', random_state=42)
+        model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.1,
+                                  tree_method='hist', device='cuda',
+                                  random_state=RANDOM_STATE)
         start_time = time.time()
         model.fit(X_train, y_train)
         print(f"✅ GPU Training Complete in {time.time() - start_time:.4f} seconds.")
-    except Exception:
-        print("⚠️ GPU acceleration not available, falling back to CPU optimization...")
-        model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.1, tree_method='hist', n_jobs=-1, random_state=42)
+    except Exception as e:
+        # A real model/data/programming bug must NOT be misreported as "no GPU".
+        if not _is_cuda_error(e):
+            print(f"❌ Training failed with a non-CUDA error; NOT falling back silently: {e}")
+            raise
+        print(f"⚠️ CUDA unavailable ({e}); falling back to CPU...")
+        model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.1,
+                                  tree_method='hist', n_jobs=-1,
+                                  random_state=RANDOM_STATE)
         start_time = time.time()
         model.fit(X_train, y_train)
         print(f"✅ CPU Training Complete in {time.time() - start_time:.4f} seconds.")
     return model
 
-def evaluate_rule_based_baseline(df, background_budget_pct=0.05):
+
+def stratified_train_val_test_split(X, y, df, test_size=0.2, val_size=0.2, random_state=RANDOM_STATE):
+    """60/20/20 stratified split (val_size/test_size are fractions of the whole)."""
+    X_temp, X_test, y_temp, y_test, df_temp, df_test = train_test_split(
+        X, y, df, test_size=test_size, random_state=random_state, stratify=y)
+    # val fraction relative to temp
+    val_rel = val_size / (1.0 - test_size)
+    X_train, X_val, y_train, y_val, df_train, df_val = train_test_split(
+        X_temp, y_temp, df_temp, test_size=val_rel, random_state=random_state, stratify=y_temp)
+    return (X_train, X_val, X_test, y_train, y_val, y_test, df_train, df_val, df_test)
+
+
+def evaluate_rule_based_baseline(df_train, df_test, background_budget_pct=0.05):
     """
-    Establishes a naive physics baseline using simple kinematic cuts (pT).
-    We find the pT cut that restricts background leakage to `background_budget_pct`
-    and measure how much Signal is retained.
+    Naive physics baseline: fit a pT1 cut on TRAIN background only (no test leakage),
+    then measure frozen performance on TEST.
     """
     print(f"\n📏 Evaluating Rule-Based Baseline (Fixed Background Budget = {background_budget_pct*100}%)")
-    signal_mask = df['label'] == 1
-    background_mask = df['label'] == 0
-    
-    # We will compute a simple cut on the leading muon's transverse momentum (pt1)
-    pt1_bg = df[background_mask]['pt1'].values
-    
-    # To keep only `background_budget_pct` of the background, we find the (1 - budget) percentile of BG pt1
-    pt_cut = np.percentile(pt1_bg, (1 - background_budget_pct) * 100)
-    
-    # Calculate efficiencies
-    bg_retained = np.sum(pt1_bg >= pt_cut) / len(pt1_bg)
-    
-    pt1_sig = df[signal_mask]['pt1'].values
-    sig_retained = np.sum(pt1_sig >= pt_cut) / len(pt1_sig)
-    
-    print(f"   => Naive Cut Rule: pT1 >= {pt_cut:.2f} GeV")
-    print(f"   => Background Retained: {bg_retained*100:.2f}% (Target was {background_budget_pct*100}%)")
-    print(f"   => Baseline Signal Efficiency: {sig_retained*100:.2f}%")
-    return sig_retained
+    print("   (cut fit on TRAIN, evaluated on frozen TEST)")
+    pt1_bg_train = df_train.loc[df_train['label'] == 0, 'pt1'].values
+    if len(pt1_bg_train) == 0:
+        raise ValueError("No background events in training split.")
+    pt_cut = np.percentile(pt1_bg_train, (1 - background_budget_pct) * 100)
 
-def evaluate_ml_model(model, X_test, y_test, background_budget_pct=0.05):
+    # Frozen evaluation on TEST
+    pt1_bg_test = df_test.loc[df_test['label'] == 0, 'pt1'].values
+    pt1_sig_test = df_test.loc[df_test['label'] == 1, 'pt1'].values
+    bg_retained = float(np.sum(pt1_bg_test >= pt_cut) / max(len(pt1_bg_test), 1))
+    sig_retained = float(np.sum(pt1_sig_test >= pt_cut) / max(len(pt1_sig_test), 1))
+
+    print(f"   => Naive Cut Rule: pT1 >= {pt_cut:.2f} GeV (fit on TRAIN)")
+    print(f"   => TEST Background Retained: {bg_retained*100:.2f}% (Target was {background_budget_pct*100}%)")
+    print(f"   => TEST Baseline Signal Efficiency: {sig_retained*100:.2f}%")
+    return {"pt_cut": float(pt_cut), "bg_retained": bg_retained, "sig_eff": sig_retained}
+
+
+def evaluate_ml_model(model, X_val, y_val, X_test, y_test, background_budget_pct=0.05):
     """
-    Evaluates the trained ML model against the exact same background budget.
-    We threshold the output probability to match the exact background leakage,
-    and compare the signal efficiency to the rule-based baseline.
+    Calibrate the probability threshold on VALIDATION for the background budget,
+    then evaluate FROZEN on TEST. Also reports AUROC/AUPRC/accuracy/confusion.
+    Replaces the old circular significance sweep with ROC-based evaluation.
     """
     print(f"\n🧠 Evaluating ML Classification (Fixed Background Budget = {background_budget_pct*100}%)")
-    y_prob = model.predict_proba(X_test)[:, 1]
-    
-    # Isolate targets
-    bg_probs = y_prob[y_test == 0]
-    sig_probs = y_prob[y_test == 1]
-    
-    # Find probability threshold that permits exactly `background_budget_pct` leakage
-    prob_cut = np.percentile(bg_probs, (1 - background_budget_pct) * 100)
-    
-    bg_retained = np.sum(bg_probs >= prob_cut) / len(bg_probs)
-    sig_retained = np.sum(sig_probs >= prob_cut) / len(sig_probs)
-    
-    print(f"   => ML Probability Threshold: >= {prob_cut:.4f}")
-    print(f"   => Background Retained: {bg_retained*100:.2f}% (Target was {background_budget_pct*100}%)")
-    print(f"   => ML Signal Efficiency: {sig_retained*100:.2f}%")
-    
-    # Plot Significance Sweep
-    eff_thresholds = np.linspace(0.01, 0.99, 50)
-    significances = []
-    for eff in eff_thresholds:
-        thresh = np.percentile(sig_probs, (1 - eff) * 100)
-        s = np.sum(sig_probs >= thresh)
-        b = np.sum(bg_probs >= thresh)
-        sig = s / np.sqrt(b + 1e-9)
-        significances.append(sig)
+    print("   (threshold fit on VALIDATION, evaluated on frozen TEST)")
+    y_val = np.asarray(y_val)
+    y_test = np.asarray(y_test)
+    p_val = model.predict_proba(X_val)[:, 1]
+    p_test = model.predict_proba(X_test)[:, 1]
+
+    bg_val = p_val[y_val == 0]
+    if len(bg_val) == 0:
+        raise ValueError("No background events in validation split.")
+    prob_cut = float(np.percentile(bg_val, (1 - background_budget_pct) * 100))
+
+    bg_test = p_test[y_test == 0]
+    sig_test = p_test[y_test == 1]
+    bg_retained = float(np.sum(bg_test >= prob_cut) / max(len(bg_test), 1))
+    sig_retained = float(np.sum(sig_test >= prob_cut) / max(len(sig_test), 1))
+
+    # Threshold-independent metrics on TEST
+    fpr, tpr, _ = roc_curve(y_test, p_test)
+    auroc = float(auc(fpr, tpr))
+    auprc = float(average_precision_score(y_test, p_test))
+    y_pred_default = (p_test >= 0.5).astype(int)
+    acc = float(accuracy_score(y_test, y_pred_default))
+    cm = confusion_matrix(y_test, y_pred_default)
+    tn, fp, fn, tp = cm.ravel().tolist() if cm.size == 4 else (0, 0, 0, 0)
+
+    print(f"   => ML Probability Threshold: >= {prob_cut:.4f} (fit on VALIDATION)")
+    print(f"   => TEST Background Retained: {bg_retained*100:.2f}% (Target was {background_budget_pct*100}%)")
+    print(f"   => TEST ML Signal Efficiency @5% FPR budget: {sig_retained*100:.2f}%")
+    print(f"   => TEST AUROC: {auroc:.4f} | AUPRC: {auprc:.4f} | Accuracy@0.5: {acc*100:.2f}%")
+    print(f"   => TEST Confusion@0.5: TN={tn} FP={fp} FN={fn} TP={tp}")
 
     os.makedirs("plots", exist_ok=True)
-    plt.figure(figsize=(8,6))
-    plt.plot(eff_thresholds, significances, color='darkviolet', lw=2)
-    plt.xlabel('Signal Efficiency', fontsize=12)
-    plt.ylabel('Significance ($S/\sqrt{B}$)', fontsize=12)
-    plt.title('Physics Validation: Signal Significance Profile', fontsize=14, fontweight='bold')
+
+    # ROC curve (threshold-independent, no leakage: single TEST evaluation)
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'XGBoost (AUROC = {auroc:.3f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=1, linestyle='--', label='Chance')
+    plt.xlabel('False Positive Rate', fontsize=12)
+    plt.ylabel('True Positive Rate', fontsize=12)
+    plt.title('ROC Curve (TEST set, frozen)', fontsize=14, fontweight='bold')
+    plt.legend(loc='lower right')
+    plt.tight_layout()
+    plt.savefig("plots/6_roc_curve.png")
+    plt.close()
+
+    # Significance profile: thresholds from VALIDATION score grid, evaluated on TEST.
+    # (Old code chose thresholds from the TEST signal itself — circular.)
+    grid = np.quantile(p_val, np.linspace(0.01, 0.99, 50))
+    effs, sigs = [], []
+    for thr in grid:
+        s = np.sum(p_test[y_test == 1] >= thr)
+        b = np.sum(p_test[y_test == 0] >= thr)
+        effs.append(s / max(np.sum(y_test == 1), 1))
+        sigs.append(s / np.sqrt(b + 1e-9))
+    plt.figure(figsize=(8, 6))
+    plt.plot(effs, sigs, color='darkviolet', lw=2)
+    plt.xlabel('Signal Efficiency (TEST)', fontsize=12)
+    plt.ylabel('Significance ($S/\\sqrt{B}$, TEST)', fontsize=12)
+    plt.title('Physics Validation: Significance Profile\n(thresholds from VALIDATION, measured on TEST)',
+              fontsize=12, fontweight='bold')
     plt.tight_layout()
     plt.savefig("plots/6b_physics_significance.png")
     plt.close()
-    
-    return sig_retained
+
+    # Confusion matrix @0.5 on TEST
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix @0.5 (TEST)', fontweight='bold')
+    plt.tight_layout()
+    plt.savefig("plots/5_confusion_matrix.png")
+    plt.close()
+
+    return {"prob_cut": prob_cut, "bg_retained": bg_retained, "sig_eff": sig_retained,
+            "auroc": auroc, "auprc": auprc, "accuracy": acc,
+            "tn": tn, "fp": fp, "fn": fn, "tp": tp}
+
 
 def main():
     df_raw = load_data()
     X, y, df = build_features_and_labels(df_raw)
-    
+
     # Evaluation Budget
     BUDGET = 0.05  # We tolerate 5% background leakage
-    
-    # 1. Physics Baseline
-    baseline_sig_eff = evaluate_rule_based_baseline(df, background_budget_pct=BUDGET)
-    
-    # 2. ML Training
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Leakage-free stratified split: 60% train / 20% val / 20% test
+    X_train, X_val, X_test, y_train, y_val, y_test, df_train, df_val, df_test = \
+        stratified_train_val_test_split(X, y, df)
+
+    print(f"✅ Split (stratified): train={len(X_train)} val={len(X_val)} test={len(X_test)}")
+    print(f"   Train signal frac: {np.mean(np.asarray(y_train)==1):.4f} | "
+          f"Val: {np.mean(np.asarray(y_val)==1):.4f} | Test: {np.mean(np.asarray(y_test)==1):.4f}")
+
+    # 1. Physics Baseline (fit TRAIN, eval TEST)
+    baseline = evaluate_rule_based_baseline(df_train, df_test, background_budget_pct=BUDGET)
+
+    # 2. ML Training (TRAIN only)
     model = train_xgboost(X_train, y_train)
-    
-    # 3. ML Evaluation
-    ml_sig_eff = evaluate_ml_model(model, X_test, y_test, background_budget_pct=BUDGET)
-    
+
+    # 3. ML Evaluation (calibrate VAL, eval frozen TEST)
+    ml = evaluate_ml_model(model, X_val, y_val, X_test, y_test, background_budget_pct=BUDGET)
+
     # 4. Generate Results Report
     os.makedirs("results", exist_ok=True)
+    dummy_acc = max(np.mean(np.asarray(y_test) == 0), np.mean(np.asarray(y_test) == 1))
     with open("results/metrics.md", "w") as f:
         f.write("# Physics Filtering Benchmark\n\n")
-        f.write(f"**Target Background Noise Budget**: {BUDGET*100}%\n\n")
-        f.write("### Architectures\n")
-        f.write("| Architecture | Signal Efficiency (Target Z Bosons Caught) |\n")
-        f.write("|---|---|\n")
-        f.write(f"| Rule-Based Cut (pT threshold) | **{baseline_sig_eff*100:.2f}%** |\n")
-        f.write(f"| Kinematic ML Classifier (XGBoost) | **{ml_sig_eff*100:.2f}%** |\n\n")
-        f.write(f"> Result: The ML pipeline improves signal detection by **+{(ml_sig_eff - baseline_sig_eff)*100:.2f}%** compared to naive theoretical bounds at the exact same noise acceptance rate.\n")
-        
+        f.write("> Supervised demonstration of learning a Z-mass-window (80<M<100 GeV)\n")
+        f.write("> selection from muon kinematics. Labels are a deterministic function of M;\n")
+        f.write("> features already encode M. Not a trigger/discovery benchmark.\n\n")
+        f.write(f"**Target Background Acceptance Budget**: {BUDGET*100}%\n\n")
+        f.write("**Protocol**: stratified 60/20/20 train/val/test; thresholds fit on\n")
+        f.write("TRAIN (baseline) or VALIDATION (ML) and measured once on frozen TEST.\n\n")
+        f.write("### Architectures (TEST set, frozen)\n")
+        f.write("| Architecture | Signal Efficiency @5% bg | AUROC | AUPRC | Acc@0.5 |\n")
+        f.write("|---|---|---|---|---|\n")
+        f.write(f"| Rule-Based Cut (pT1 >= {baseline['pt_cut']:.2f} GeV) | **{baseline['sig_eff']*100:.2f}%** | — | — | — |\n")
+        f.write(f"| Kinematic ML Classifier (XGBoost) | **{ml['sig_eff']*100:.2f}%** | {ml['auroc']:.4f} | {ml['auprc']:.4f} | {ml['accuracy']*100:.2f}% |\n\n")
+        f.write(f"TEST background retained: baseline {baseline['bg_retained']*100:.2f}%, ML {ml['bg_retained']*100:.2f}% "
+                f"(target {BUDGET*100}%).\n\n")
+        f.write(f"TEST confusion @0.5: TN={ml['tn']} FP={ml['fp']} FN={ml['fn']} TP={ml['tp']}.\n\n")
+        f.write(f"Dummy (all-background) accuracy on TEST would be {dummy_acc*100:.2f}%; "
+                "accuracy alone is misleading under this class imbalance — prefer AUROC/AUPRC above.\n\n")
+        f.write(f"> Result: at the same ≈5% background acceptance, ML signal efficiency "
+                f"({ml['sig_eff']*100:.2f}%) vs naive pT cut ({baseline['sig_eff']*100:.2f}%): "
+                f"**{((ml['sig_eff'] - baseline['sig_eff'])*100):+.2f}pp** difference on frozen TEST.\n")
+
     print("\n✅ Physics Benchmarks compiled natively to results/metrics.md")
     joblib.dump(model, 'z_boson_xgb_model.joblib')
     print("💾 Model saved locally as 'z_boson_xgb_model.joblib'")
+
 
 if __name__ == "__main__":
     main()
