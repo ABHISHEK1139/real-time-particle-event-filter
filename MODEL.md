@@ -1,21 +1,21 @@
 # Model Reproduction & Output Binding
 
-As per formal CERN MLOps best practices, raw compiled model binaries (`.joblib`, `.pt`, `.onnx`) are deliberately excluded from this Git repository to maintain slim payload limits and prevent unbounded version-control bloat.
-
-Instead of cloning a stagnant binary, researchers are expected to execute the native training pipeline utilizing local GPU acceleration to compile the freshest model dynamically.
+Raw compiled model binaries (`.joblib`, `.pt`, `.onnx`) are deliberately excluded from this Git repository to keep the repo slim. Training data (`.csv`/`.root`) is likewise excluded. You must generate them locally.
 
 ## Reproduction Instructions
 
-To generate the active predictive model (`z_boson_xgb_model.joblib`), ensure you have fetched the associated CERN Dimuon Open Data CSV and execute the following from the master directory:
+From the repository root, fetch data then train:
 
 ```bash
-# Execute the native execution pipeline
-python train_model.py
+pip install -r requirements.txt
+python src/data_download.py   # fetches CERN Open Data CSV -> Dimuon_DoubleMu.csv (+ .root)
+python src/train_model.py     # trains XGBoost -> z_boson_xgb_model.joblib
 ```
 
 This procedure will:
-1. Parse the local CSV and construct the kinematic feature grids.
-2. Delegate memory execution sequentially to the NVIDIA CUDA core architecture.
-3. Spool the newly trained XGBoost classifier and emit a localized `z_boson_xgb_model.joblib` natively onto your hardware.
+1. Parse the local CSV and construct the kinematic feature matrix
+   (`pt1, pt2, eta1, eta2, phi1, phi2`; invariant mass `M` is used only for labels/evaluation, never as a feature).
+2. Try XGBoost with `device='cuda'` and automatically fall back to CPU (`tree_method='hist'`) only when CUDA is genuinely unavailable or fails (other errors propagate instead of being misreported as "no GPU").
+3. Write the trained classifier to `z_boson_xgb_model.joblib` in the repository root and write benchmark metrics/plots to `results/` and `plots/`.
 
-Once populated, downstream simulators (like `realtime_simulation.py`) will automatically discover and load the `.joblib` binary payload.
+Once present, downstream scripts (e.g. `python src/realtime_simulation.py`) will discover and load the `.joblib` file. If it is missing they exit with a clear error telling you to run the two commands above first.

@@ -18,6 +18,8 @@ run_output.txt
 clean.txt
 
 *.joblib
+*.pt
+models/
 
 *.csv
 
