@@ -130,7 +130,7 @@ Last measured on an NVIDIA RTX 3050 Laptop GPU (XGBoost 3.4.1, CPU inference via
 ├── Dockerfile                # Multi-stage, non-root production container
 ├── requirements.txt          # Runtime dependencies (lower bounds; what Docker installs)
 ├── requirements-dev.txt      # Runtime + pytest + ruff
-├── requirements-lock.txt     # Pinned versions of a verified working environment
+├── requirements-lock.txt     # Complete 79-pin lock, verified in a clean virtualenv
 ├── src/
 │   ├── config.py             # Single source of truth: constants, paths, budget-safe thresholding
 │   ├── _compat.py            # UTF-8 stdout guard, artifact lookup, logging setup

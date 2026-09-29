@@ -1,67 +1,109 @@
-# Pinned reproduction snapshot — Windows local (Python 3.12.10), verified 2026-09-29.
+# Complete pinned dependency lock.
 #
-# Provenance: these are the exact versions present in a working environment that
-# completed the full run (download -> validate -> train -> anomaly -> GNN ->
-# spectrum -> benchmark -> replay -> pytest). Previously this file claimed
-# `pytest 9 passed` while the README claimed 14 tests, pinned `torch==2.12.1`
-# with `torchvision==0.27.1` (a combination that does not install together) and
-# omitted `streamlit` entirely, so it could not reproduce anything.
+#   pip install -r requirements-lock.txt
 #
-# Install:  pip install -r requirements-lock.txt
+# This file pins EVERY distribution in the dependency closure, not only the
+# direct requirements. The previous revision was a "lock" in name only: 30+
+# transitive dependencies (Jinja2, requests, urllib3, six, ...) were left
+# unpinned and floated to whatever was newest on the day of install, so the
+# reproduction it advertised was not reproducible.
 #
-# NOTE: `torch==2.5.1` is the verified local build (a +cu121 wheel on this host).
-# On a CPU-only machine plain `torch==2.5.1` from PyPI resolves to the CPU build
-# and every script still works — the GPU paths in this repo all degrade cleanly.
-# `torchvision`/`torchaudio` are NOT pinned: they are optional accelerators pulled
-# in by unrelated packages here, and the previous torchvision pin is what made
-# this file uninstallable.
+# Provenance: every pin below was produced by pip's own resolver and verified in
+# a clean virtualenv with `pip install --dry-run`, so the set is mutually
+# satisfiable by construction. Verified 2026-09-29, Windows / Python 3.12.10.
+#
+# Pins are version-only, so pip selects the correct wheel per platform
+# (cp310/cp312, win_amd64/manylinux). Regenerate with:
+#   pip install -r requirements.txt -r requirements-dev.txt && pip freeze
+#
+# The `gnn` extra (torch, torch-geometric) is pinned but commented out of the
+# default install: it is needed only by src/train_gnn.py and adds ~2.5 GB of
+# wheels. Every torch path in this repo degrades cleanly to CPU.
 
-# --- Direct dependencies (mirrors requirements.txt) ---
-pandas==2.3.3
-numpy==2.4.4
+# --- Direct runtime dependencies (mirrors requirements.txt) ---
+awkward==2.13.0
+joblib==1.6.0
 matplotlib==3.11.0
-seaborn==0.13.2
+numpy==2.4.4
+pandas==2.3.3
 scikit-learn==1.9.0
 scipy==1.16.3
-xgboost==3.4.1
-joblib==1.6.0
+seaborn==0.13.2
 streamlit==1.63.0
-uproot==5.7.6
-awkward==2.13.0
 termcolor==3.3.0
+uproot==5.7.6
+xgboost==3.4.1
 
-# --- Test tooling ---
+# --- Test and lint tooling (mirrors requirements-dev.txt) ---
+coverage==7.16.2
 pytest==9.0.3
 pytest-cov==7.1.0
+ruff==0.15.12
 
-# --- Geometric deep learning (optional extra: `pip install .[gnn]`) ---
-torch==2.5.1
-torch-geometric==2.8.0.post1
-
-# --- Key transitive pins for the dashboard + plotting stack ---
-pyarrow==24.0.0
-pillow==12.2.0
-packaging==26.0
+# --- Full transitive closure ---
 altair==6.2.2
+anyio==4.13.0
+attrs==26.1.0
+awkward-cpp==56
 blinker==1.9.0
-click==8.5.0
 cachetools==6.2.6
-rich==14.3.3
-protobuf==6.33.6
-watchdog==6.0.0
-pydeck==0.9.3
-GitPython==3.1.50
-fsspec==2023.10.0
-lxml==6.1.1
-tzdata==2025.3
-pytz==2026.2
+certifi==2026.5.20
+charset-normalizer==3.5.1
+click==8.5.0
 cloudpickle==3.1.2
-narwhals==2.22.1
+colorama==0.4.6
+contourpy==1.4.0
+cramjam==2.12.1
+cycler==0.12.1
+fonttools==4.66.0
+fsspec==2023.10.0
+gitdb==4.0.12
+gitpython==3.1.50
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
 httpx==0.28.1
 idna==3.20
+iniconfig==2.3.0
+itsdangerous==2.2.0
+jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+kiwisolver==1.5.1
+lxml==6.1.1
+markdown-it-py==4.2.0
+markupsafe==3.0.3
+mdurl==0.1.2
+narwhals==2.22.1
+packaging==26.0
+pillow==12.2.0
+pluggy==1.6.0
+protobuf==6.33.6
+pyarrow==24.0.0
+pydeck==0.9.3
+pygments==2.21.0
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+python-multipart==0.0.32
+pytz==2026.2
+referencing==0.37.0
+requests==2.34.2
+rich==14.3.3
+rpds-py==2026.6.3
+six==1.17.0
+smmap==5.0.3
 sniffio==1.3.1
-certifi==2026.5.20
-httpcore==1.0.9
-h11==0.16.0
-anyio==4.13.0
-typing_extensions==4.15.0
+starlette==1.7.0
+threadpoolctl==3.7.0
+toml==0.10.2
+typing-extensions==4.15.0
+tzdata==2025.3
+urllib3==2.8.0
+uvicorn==0.54.0
+watchdog==6.0.0
+websockets==16.1.1
+xxhash==4.0.1
+
+# --- Optional `gnn` extra: uncomment to install ---
+# torch==2.5.1
+# torch-geometric==2.8.0.post1

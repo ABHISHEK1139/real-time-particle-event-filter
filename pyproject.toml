@@ -57,11 +57,22 @@ minversion = "7.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 filterwarnings = [
-    "error::FutureWarning",
-    "error::DeprecationWarning",
+    # Our own code must not use deprecated APIs. Scoped to this package on
+    # purpose: a blanket `error::DeprecationWarning` fails the suite whenever a
+    # newer third-party wheel starts emitting one, which is a flaky gate on
+    # something we do not control.
+    "error::DeprecationWarning:src\\..*",
+    "error::FutureWarning:src\\..*",
+    "error::DeprecationWarning:app",
+    "error::FutureWarning:app",
+    # Known-noisy third-party warnings that are not actionable here.
     "ignore::DeprecationWarning:torch.*",
     "ignore::DeprecationWarning:streamlit.*",
     "ignore::DeprecationWarning:pkg_resources.*",
+    "ignore::DeprecationWarning:matplotlib.*",
+    "ignore::DeprecationWarning:uproot.*",
+    "ignore::DeprecationWarning:awkward.*",
+    "ignore::UserWarning:pyparsing",
 ]
 markers = [
     "slow: end-to-end runs over the full 100k-event dataset",

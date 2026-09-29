@@ -89,9 +89,14 @@ jobs:
         run: python src/realtime_simulation.py --batch-size 25000 --max-batches 1
 
       - name: Run pytest suite with coverage
+        # NOTE: bare `--cov` only. Naming a file (e.g. `--cov=app.py`) makes
+        # coverage resolve it as an importable module, which imports it before
+        # conftest.py and crashes NumPy with "cannot load module more than once
+        # per process" -> pytest exits 4 (usage error) and zero tests run.
+        # The measurement scope lives in [tool.coverage.run] in pyproject.toml.
         run: |
           python -m pytest tests/ -v \
-            --cov=src --cov=app.py \
+            --cov \
             --cov-report=term-missing \
             --cov-report=xml \
             --junitxml=pytest-report.xml
@@ -140,18 +145,33 @@ jobs:
           tags: cern-zboson-ml:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke test the image entry points
+
+      # Preflight: distinguishes "the build never produced a local image" from
+      # "the container started and then failed", which are otherwise conflated
+      # into a single opaque exit code.
+      - name: Confirm the image is present in the local engine
+        run: docker image inspect cern-zboson-ml:ci --format '{{.Id}} user={{.Config.User}} workdir={{.Config.WorkingDir}}'
+
+      # Single-line `python -c` on purpose: a multi-line quoted argument is easy
+      # to break in a `run: |` block, and a malformed command surfaces as docker
+      # exit 125 ("requires at least 1 argument") rather than a Python traceback.
+      - name: Smoke test: every entry point imports inside the image
         run: |
-          set -eu
-          # The image ships no dataset and no weights: both are produced at run
-          # time, so importing every entry point is the cheapest real check that
-          # the venv copy, the system libs and the source tree all line up.
-          docker run --rm cern-zboson-ml python -c "
-          import src.data_download, src.train_model, src.anomaly_detection
-          import src.plot_mass_spectrum, src.realtime_simulation, src.speed_analysis
-          import src.baseline_physics_cut, src.config
-          print('all entry points import cleanly')
-          "
-          # Prove the dataset volume is writable by the non-root user.
-          docker run --rm -v cern-data:/data cern-zboson-ml \
-            sh -c "python src/data_download.py --help >/dev/null && touch /data/.w && rm /data/.w && echo 'data volume writable'"
+          docker run --rm cern-zboson-ml:ci python -c "import src.config, src.data_download, src.train_model, src.anomaly_detection, src.plot_mass_spectrum, src.realtime_simulation, src.speed_analysis, src.baseline_physics_cut; print('all entry points import cleanly')" 2>&1
+
+      - name: Smoke test: data volume is writable by the non-root user
+        run: |
+          docker volume create cern-data
+          docker run --rm -v cern-data:/data cern-zboson-ml:ci sh -c 'touch /data/.probe && rm /data/.probe && echo "data volume writable by uid $(id -u)"' 2>&1
+
+      - name: Smoke test: pipeline CMD runs to completion on the mock dataset
+        run: |
+          # Generates a local fixture so the run needs no network, then exercises
+          # the image's default CMD end to end (download -> train -> anomaly -> baseline).
+          docker run --rm -e CERNDATA_VERIFY_CHECKSUM=0 -v cern-data:/data \
+            cern-zboson-ml:ci sh -c '
+              python tests/make_mock_dataset.py --rows 1000 --out /data/Dimuon_DoubleMu.csv
+              python src/data_download.py && python src/train_model.py \
+                && python src/anomaly_detection.py && python src/baseline_physics_cut.py
+              test -s /app/results/metrics.json && echo "pipeline CMD produced metrics.json"
+            ' 2>&1
