@@ -8,6 +8,8 @@
 
 **Protocol**: stratified 60/20/20 train/val/test; thresholds fit on
 TRAIN (baseline) or VALIDATION (ML) and measured once on frozen TEST.
+Cuts are placed so background retention cannot exceed the budget
+(`src.config.threshold_for_budget`).
 
 ### Architectures (TEST set, frozen)
 | Architecture | Signal Efficiency @5% bg | AUROC | AUPRC | Acc@0.5 |

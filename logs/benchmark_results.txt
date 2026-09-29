@@ -1,23 +1,26 @@
-🚀 Loading CERN Dimuon Collision Data (ROOT TTree)...
-✅ Split (stratified): train=60000 val=20000 test=20000
+﻿≡ƒÜÇ Loading CERN Dimuon Collision Data (ROOT TTree)...
+Γ£à Split (stratified): train=60000 val=20000 test=20000
    Train signal frac: 0.0517 | Val: 0.0517 | Test: 0.0517
 
-📏 Evaluating Rule-Based Baseline (Fixed Background Budget = 5.0%)
+≡ƒôÅ Evaluating Rule-Based Baseline (Fixed Background Budget = 5.0%)
    (cut fit on TRAIN, evaluated on frozen TEST)
-   => Naive Cut Rule: pT1 >= 18.94 GeV (fit on TRAIN)
-   => TEST Background Retained: 5.17% (Target was 5.0%)
-   => TEST Baseline Signal Efficiency: 95.46%
+   => Baseline Leading Muon Cut Rule: pT_lead >= 23.16 GeV (fit on TRAIN)
+   => TEST Background Retained: 4.99% (Target was 5.0%)
+   => TEST Baseline Signal Efficiency: 96.71%
 
-⚡ Starting Model Training with XGBoost (GPU attempt, CPU fallback)...
-✅ GPU Training Complete in 0.4451 seconds.
+ΓÜí Starting Model Training with XGBoost (GPU attempt, CPU fallback)...
+Γ£à GPU Training Complete in 1.6371 seconds.
 
-🧠 Evaluating ML Classification (Fixed Background Budget = 5.0%)
+≡ƒºá Evaluating ML Classification (Fixed Background Budget = 5.0%)
    (threshold fit on VALIDATION, evaluated on frozen TEST)
-   => ML Probability Threshold: >= 0.0002 (fit on VALIDATION)
+   => ML Probability Threshold: >= 0.000230784 (fit on VALIDATION)
    => TEST Background Retained: 4.87% (Target was 5.0%)
    => TEST ML Signal Efficiency @5% FPR budget: 100.00%
    => TEST AUROC: 0.9981 | AUPRC: 0.9456 | Accuracy@0.5: 99.17%
    => TEST Confusion@0.5: TN=18850 FP=115 FN=50 TP=985
 
-✅ Physics Benchmarks compiled natively to results/metrics.md
-💾 Model saved locally as 'z_boson_xgb_model.joblib'
+Γ£à Physics Benchmarks compiled natively to C:\Users\ak612\OneDrive\Desktop\CERN 2ND\results\metrics.md
+≡ƒÆ╛ Model saved locally as C:\Users\ak612\OneDrive\Desktop\CERN 2ND\z_boson_xgb_model.joblib
+≡ƒÆ╛ Production native model saved as C:\Users\ak612\OneDrive\Desktop\CERN 2ND\models\z_boson_xgb_model.json
+≡ƒö¼ [PHYSICS VISUALIZATION] Reconstructing Dimuon Invariant Mass Spectrum...
+Γ£à Invariant mass spectrum figure saved to C:\Users\ak612\OneDrive\Desktop\CERN 2ND\plots\1_invariant_mass_spectrum.png

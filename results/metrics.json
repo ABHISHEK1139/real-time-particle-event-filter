@@ -1,0 +1,25 @@
+{
+  "budget": 0.05,
+  "protocol": "stratified 60/20/20 train/val/test; thresholds fit on TRAIN (baseline) or VALIDATION (ML), measured once on frozen TEST",
+  "test_events": 20000,
+  "test_signal_fraction": 0.05175,
+  "dummy_accuracy": 0.94825,
+  "baseline": {
+    "pt_cut": 23.163800000000002,
+    "bg_retained": 0.049934089111521224,
+    "sig_eff": 0.9671497584541063
+  },
+  "ml": {
+    "prob_cut": 0.00023078401864040646,
+    "bg_retained": 0.04866860005272871,
+    "sig_eff": 1.0,
+    "auroc": 0.9980651365151417,
+    "auprc": 0.9455591694795716,
+    "accuracy": 0.99175,
+    "tn": 18850,
+    "fp": 115,
+    "fn": 50,
+    "tp": 985
+  },
+  "xgboost_version": "3.4.1"
+}

@@ -1,11 +1,11 @@
-🔬 [EXPERIMENT: PURE PHYSICS BASELINE]
+﻿≡ƒö¼ [EXPERIMENT: PURE PHYSICS BASELINE]
 Deterministic 80<M<100 cut vs itself = 100% by construction (ceiling).
 
-✅ Loaded 100000 events.
+Γ£à Loaded 100000 events.
 
 ==========================================
-🎯 Pure Mass (M) Cut Accuracy: 100.0000% (tautology: cut == label)
-⏱️ Cut Execution Time: 0.0206 seconds
+≡ƒÄ» Pure Mass (M) Cut Accuracy: 100.0000% (tautology: cut == label)
+ΓÅ▒∩╕Å Cut Execution Time: 0.000203 seconds
 ==========================================
 
 [Classification Report]
@@ -19,7 +19,7 @@ Deterministic 80<M<100 cut vs itself = 100% by construction (ceiling).
 weighted avg       1.00      1.00      1.00    100000
 
 
-📝 CONCLUSION:
+≡ƒô¥ CONCLUSION:
 This 100% is the ceiling BY CONSTRUCTION (same rule defines labels).
 An ML model on (pt, eta, phi) scoring ~99% is reconstructing M geometrically,
 not discovering new physics. Compare models via AUROC/AUPRC in results/metrics.md.

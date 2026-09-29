@@ -1,17 +1,44 @@
-# Core runtime deps (flexible lower bounds for portability across CUDA/CPU wheels).
-# Tested 2026-09: Python 3.10 (Docker) / 3.12 (local), pandas 2.x, numpy 2.x,
-# scikit-learn 1.9, xgboost 3.x, torch 2.x + torch_geometric 2.8, uproot 5.x.
-# For a fully pinned repro, use requirements-lock.txt alongside results/metrics.md.
+# Runtime dependencies — everything needed to ingest, train, benchmark and serve.
+#
+# This is what the Docker image installs. It deliberately excludes the test and
+# lint tooling so the shipped image carries no pytest/ruff.
+#
+# Lower bounds only, so a fresh install resolves current wheels for CUDA and CPU.
+# For a byte-reproducible environment install requirements-lock.txt instead.
+#
+# Verified 2026-09: Python 3.10 (Docker) / 3.12 (local), pandas 2.x, numpy 2.x,
+# scikit-learn 1.9, xgboost 3.x, uproot 5.x, streamlit 1.x.
+
+# --- Data ingestion ---
 pandas>=1.5
 numpy>=1.23
-matplotlib>=3.6
-seaborn>=0.12
+uproot>=5.0
+awkward>=2.0
+
+# --- Modelling + evaluation ---
 scikit-learn>=1.2
 xgboost>=1.7
 joblib>=1.2
-pytest>=7.0
-torch>=2.0
-torch_geometric>=2.3
-uproot>=5.0
-awkward>=2.0
+scipy>=1.2
+
+# --- Plotting ---
+matplotlib>=3.6
+seaborn>=0.12
+
+# --- Interactive dashboard (app.py) ---
+# Previously missing entirely, which made the headline `streamlit run app.py`
+# feature impossible to install and impossible to run in the Docker image.
+streamlit>=1.30
+
+# --- Console output ---
 termcolor>=2.0
+
+# ---------------------------------------------------------------------------
+# Optional extras (not installed by default):
+#
+#   pip install "torch>=2.0" "torch-geometric>=2.3"   # src/train_gnn.py
+#   pip install -r requirements-dev.txt                 # tests + lint
+#
+# Every torch-dependent path degrades cleanly: src/train_gnn.py is the only
+# module that needs it, and all GPU code paths in this repo fall back to CPU.
+# ---------------------------------------------------------------------------

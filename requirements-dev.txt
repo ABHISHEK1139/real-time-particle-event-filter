@@ -1,0 +1,15 @@
+# Development dependencies: the runtime set plus test and lint tooling.
+#
+#   pip install -r requirements-dev.txt
+#
+# Not installed in the Docker image — the shipped container is runtime-only.
+# For a byte-reproducible environment use requirements-lock.txt.
+
+-r requirements.txt
+
+# --- Test suite ---
+pytest>=7.0
+pytest-cov>=4.0
+
+# --- Lint / format ---
+ruff>=0.5

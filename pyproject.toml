@@ -1,0 +1,126 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cern-zboson-ml"
+version = "1.0.0"
+description = "ML filtering of Z -> mu+mu- events from CMS Open Data (Run2011A DoubleMu, 7 TeV)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+keywords = ["hep", "cms", "open-data", "xgboost", "anomaly-detection", "pytorch-geometric"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# Lower bounds only. requirements-lock.txt carries the exact verified versions.
+dependencies = [
+    "pandas>=1.5",
+    "numpy>=1.23",
+    "matplotlib>=3.6",
+    "seaborn>=0.12",
+    "scikit-learn>=1.2",
+    "xgboost>=1.7",
+    "joblib>=1.2",
+    "uproot>=5.0",
+    "awkward>=2.0",
+    "termcolor>=2.0",
+    "streamlit>=1.30",
+]
+
+[project.optional-dependencies]
+gnn = ["torch>=2.0", "torch_geometric>=2.3"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/"
+Documentation = "https://opendata.cern.ch/record/5201"
+
+[project.scripts]
+cern-zboson-download = "src.data_download:download_and_convert"
+cern-zboson-train = "src.train_model:main"
+cern-zboson-anomaly = "src.anomaly_detection:run_anomaly_benchmark"
+cern-zboson-replay = "src.realtime_simulation:simulate_realtime_stream"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+filterwarnings = [
+    "error::FutureWarning",
+    "error::DeprecationWarning",
+    "ignore::DeprecationWarning:torch.*",
+    "ignore::DeprecationWarning:streamlit.*",
+    "ignore::DeprecationWarning:pkg_resources.*",
+]
+markers = [
+    "slow: end-to-end runs over the full 100k-event dataset",
+    "gpu: requires a CUDA-capable device",
+]
+
+[tool.coverage.run]
+branch = true
+# `source` is the repository root, not a file list: naming a standalone script
+# (app.py) in `source` makes coverage resolve it as an importable module, which
+# imports it before conftest and crashes numpy with
+# "cannot load module more than once per process". Walking the directory keeps
+# app.py measurable without that import.
+source = ["."]
+omit = [
+    "src/__init__.py",
+    "src/_compat.py",
+    "tests/*",
+    "*/site-packages/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "pragma: no cover",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [".git", "__pycache__", ".pytest_cache"]
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "PIE", "RET", "ARG", "PT", "RUF"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "PT011",   # pytest.raises(ValueError) is too broad; needs a match= regex
+    "PT012",   # pytest.raises() blocks are intentional here
+    "RUF001",  # ambiguous unicode: the source is full of physics symbols on purpose
+    "RUF002",
+    "RUF003",
+    "B008",    # function call in default arg is intentional (argparse-free helpers)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules must insert the repo root into sys.path *before* their first local
+# import, so the import block is deliberately unsorted and late. E402 is still
+# suppressed inline, where the reader can see why.
+"src/*.py" = ["I001"]
+"app.py" = ["I001"]
+# Tests import torch/torch_geometric only to assert availability, the conftest
+# bootstrap forces a specific import order, and fixtures such as `in_tmp_cwd` are
+# requested purely for their side effect (chdir) rather than their return value.
+"tests/*.py" = ["I001", "F401", "F811", "F841", "ARG001"]

@@ -1,31 +1,62 @@
-# Byte-compiled / optimized / DLL files
+# --- Python build & cache artifacts ---
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+build/
+dist/
 
-# Virtual Environments
+# --- Virtual environments ---
+.venv/
 venv/
 env/
-.env
+.python-version
 
-# MacOS
-.DS_Store
-
-# Test / cache outputs
+# --- Test / lint / coverage caches ---
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
-# Temporary outputs
-temp/
+# --- Secrets / local config ---
+.env
+*.pem
+*.key
 
-run_output.txt
-clean.txt
-
+# --- Trained model binaries ---
+# Compiled weights are reproducible from src/data_download.py + src/train_model.py
+# and are not versioned; see MODEL.md. Note that *.joblib is NOT tracked even
+# though an older copy existed in the working tree.
 *.joblib
 *.pt
+*.onnx
+*.pkl
 models/
 
-*.csv
+# --- Datasets ---
+# Dimuon_DoubleMu.csv is deliberately un-ignored: it is the official CERN
+# educational sample the README documents and CI validates against. The derived
+# ROOT copy and the checksum sidecar are build outputs and stay ignored.
+*.root
+*.root.fingerprint
 !Dimuon_DoubleMu.csv
 
-*.root
+# --- Transient outputs ---
+logs/*.tmp
+temp/
+run_output.txt
+clean.txt
+*.log
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp

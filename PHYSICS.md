@@ -17,12 +17,15 @@ trigger/discovery system.
 - CERN flags the 5201 sample as education/outreach, **not suitable for a full
   physics analysis**. Treat all numbers here as ML-pipeline figures on that
   curated subset, not detector performance.
+- The payload is pinned by SHA-256 and exact byte size in
+  [`src/config.py`](src/config.py), so a swapped or truncated mirror payload is
+  rejected rather than silently used.
 
 ## Physical Relevance
 
 At the LHC Run-1 energy of **7 TeV** (this data), most collisions produce
 low-momentum QCD background; a small fraction produce electroweak bosons such
-as the $Z$ ($\approx 91.18$ GeV) and $W^\pm$ ($\approx 80.4$ GeV).
+as the $Z$ ($\approx 91.19$ GeV) and $W^\pm$ ($\approx 80.4$ GeV).
 
 The $Z$ boson (lifetime $\sim 3 \times 10^{-25}$ s) is seen only via decay
 products — here $Z \rightarrow \mu^+ \mu^-$ ($\approx 3.3\%$ of decays).
@@ -37,16 +40,38 @@ trigger environment.
 
 ## Mathematical Kinematics
 
-For a dimuon pair:
+For a dimuon pair, in the approximation used throughout this repository:
 
 $$ M = \sqrt{2 p_{T1} p_{T2} (\cosh(\eta_1 - \eta_2) - \cos(\phi_1 - \phi_2))} $$
 
 - $p_{T}$: transverse momentum; $\eta$: pseudorapidity; $\phi$: azimuthal angle.
 
-Labels in this repo are `1 if 80 < M < 100 else 0`, while model inputs are
-($p_T, \eta, \phi$) — which **mathematically determine M** (the GNN additionally
-sees $E, p_x, p_y, p_z$, from which $M$ is directly reconstructible). By
-excluding $M$ as a feature we force the model to *re-learn that geometric
-relation*, which is pedagogically interesting but is **not** evidence of
-trigger-level discovery power. The honest claim is mass-window learning, and
-accuracy must be read alongside AUROC/AUPRC given the ~95/5 class imbalance.
+> **Caveat on this formula.** It is the exact invariant mass only when the two
+> muons are back-to-back in the transverse plane ($\Delta\phi \approx \pi$) and
+> their masses are negligible. In general $M$ must be built from the full
+> four-momenta, which the CMS sample provides (`E`, `px`, `py`, `pz`) and which
+> the GNN uses. The surrogate is what makes the label boundary learnable from
+> $(p_T, \eta, \phi)$ alone, and it is the intended teaching point — but it is an
+> approximation, not the exact reconstruction.
+
+Labels in this repo are `1 if 80 < M < 100 else 0` (the mass window edges are
+**exclusive** on both sides — see `src.config.labels_from_mass`), while model
+inputs are ($p_T, \eta, \phi$) — which **mathematically determine $M$** (the GNN
+additionally sees $E, p_x, p_y, p_z$, from which $M$ is directly
+reconstructible). By excluding $M$ as a feature we force the model to *re-learn
+that geometric relation*, which is pedagogically interesting but is **not**
+evidence of trigger-level discovery power.
+
+The honest claim is mass-window learning, and accuracy must be read alongside
+AUROC/AUPRC given the ~95/5 class imbalance: an all-background classifier
+already scores 94.83% accuracy on the test split.
+
+## Trigger Budget Semantics
+
+The "5% background budget" used throughout is a **rate ceiling**, not a target.
+`src.config.threshold_for_budget` places the cut so that background retention
+is guaranteed $\le 5\%$ even when the score distribution is discrete and heavily
+tied — which it is, because gradient-boosted trees emit large numbers of exactly
+$0.0$ and $1.0$ probabilities. A percentile-based cut interpolates between tied
+scores and can land above the budget; the realised retention is therefore always
+printed and reported alongside the budget it was calibrated against.

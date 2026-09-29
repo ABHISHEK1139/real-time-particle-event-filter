@@ -2,54 +2,156 @@ name: CI Pipeline (Physics Validations)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main, master]
   pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref instead of burning minutes on them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # CI uses a local physics-consistent fixture instead of the 14 MB official
+  # payload, so the pinned SHA-256 cannot apply. The scripts size-gate the
+  # checksum themselves; this just states the intent explicitly.
+  CERNDATA_VERIFY_CHECKSUM: "0"
 
 jobs:
-  build-and-test:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install "ruff>=0.5"
+      - name: Ruff check
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
 
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies (single pass)
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          # Caches the pip download cache, not the installed venv: correct across
+          # the version matrix and across differing dependency sets.
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-    - name: Mock Dataset Generation (CI Limit, physics-consistent)
-      run: |
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch is ~200 MB instead of ~2.5 GB of CUDA wheels; the
+          # GPU code paths in this repo all degrade cleanly when CUDA is absent.
+          pip install -r requirements-dev.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Generate physics-consistent mock dataset
         # M is COMPUTED from kinematics via the invariant-mass relation, so the
-        # label structure matches production. Old CI used random M (unrelated to
-        # pt/eta/phi), which only proved "code runs", not physics correctness.
-        python -c "
-        import pandas as pd
-        import numpy as np
-        rng = np.random.default_rng(42)
-        n = 1000
-        pt1 = rng.uniform(5, 100, n); pt2 = rng.uniform(5, 100, n)
-        eta1 = rng.uniform(-2.4, 2.4, n); eta2 = rng.uniform(-2.4, 2.4, n)
-        phi1 = rng.uniform(-3.14, 3.14, n); phi2 = rng.uniform(-3.14, 3.14, n)
-        M = np.sqrt(np.maximum(2*pt1*pt2*(np.cosh(eta1-eta2)-np.cos(phi1-phi2)), 1e-9))
-        df = pd.DataFrame({'Run': 1, 'Event': np.arange(n), 'type1': 13, 'E1': 50.0,
-          'px1': 10.0, 'py1': 10.0, 'pz1': 10.0, 'pt1': pt1, 'eta1': eta1, 'phi1': phi1, 'Q1': 1,
-          'type2': -13, 'E2': 50.0, 'px2': -10.0, 'py2': -10.0, 'pz2': -10.0,
-          'pt2': pt2, 'eta2': eta2, 'phi2': phi2, 'Q2': -1, 'M': M})
-        df.to_csv('Dimuon_DoubleMu.csv', index=False)
-        "
+        # label structure matches production. The old CI fixture drew a random
+        # M unrelated to pt/eta/phi, which only proved "code runs".
+        run: python tests/make_mock_dataset.py --rows 1000 --out Dimuon_DoubleMu.csv
 
-    - name: Execute Model Generation
-      run: |
-        python src/data_download.py
-        python src/train_model.py
+      - name: Data ingestion + ROOT conversion
+        run: python src/data_download.py
 
-    - name: Run Formal Pytest Suite
-      run: |
-        python -m pytest tests/test_pipeline.py -v
+      - name: Train supervised model
+        run: python src/train_model.py
+
+      - name: Train unsupervised anomaly detector
+        run: python src/anomaly_detection.py
+
+      - name: Deterministic mass-cut baseline
+        run: python src/baseline_physics_cut.py
+
+      - name: Replay smoke test (needs the trained model)
+        run: python src/realtime_simulation.py --batch-size 25000 --max-batches 1
+
+      - name: Run pytest suite with coverage
+        run: |
+          python -m pytest tests/ -v \
+            --cov=src --cov=app.py \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --junitxml=pytest-report.xml
+
+      - name: Verify required artifacts were produced
+        run: |
+          set -eu
+          for f in z_boson_xgb_model.joblib Dimuon_DoubleMu.root \
+                   results/metrics.md results/metrics.json \
+                   results/anomaly_metrics.md results/anomaly_metrics.json \
+                   models/z_boson_xgb_model.json \
+                   plots/1_invariant_mass_spectrum.png plots/5_confusion_matrix.png \
+                   plots/6_roc_curve.png plots/6b_physics_significance.png \
+                   plots/7_anomaly_detection_roc.png; do
+            test -s "$f" || { echo "::error::missing or empty artifact: $f"; exit 1; }
+          done
+          echo "All expected artifacts present."
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-py${{ matrix.python-version }}
+          path: |
+            results/
+            plots/
+            models/
+            pytest-report.xml
+            coverage.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+  container:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: cern-zboson-ml:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the image entry points
+        run: |
+          set -eu
+          # The image ships no dataset and no weights: both are produced at run
+          # time, so importing every entry point is the cheapest real check that
+          # the venv copy, the system libs and the source tree all line up.
+          docker run --rm cern-zboson-ml python -c "
+          import src.data_download, src.train_model, src.anomaly_detection
+          import src.plot_mass_spectrum, src.realtime_simulation, src.speed_analysis
+          import src.baseline_physics_cut, src.config
+          print('all entry points import cleanly')
+          "
+          # Prove the dataset volume is writable by the non-root user.
+          docker run --rm -v cern-data:/data cern-zboson-ml \
+            sh -c "python src/data_download.py --help >/dev/null && touch /data/.w && rm /data/.w && echo 'data volume writable'"

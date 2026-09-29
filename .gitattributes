@@ -1,0 +1,30 @@
+# Normalize line endings in the repository; keep them native in the working tree.
+# Without this, every file shows "LF will be replaced by CRLF" on Windows and
+# diffs are polluted by line-ending-only changes.
+* text=auto eol=lf
+
+# Shell/CI scripts must stay LF even on Windows checkouts, or bash in CI breaks.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.dockerignore text eol=lf
+
+# Python source: LF in the index, native in the working tree.
+*.py text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+
+# Datasets, figures and model artifacts are binary: never line-ending translated,
+# and diff them only by metadata to avoid an unreadable diff on a 14 MB CSV.
+*.csv binary
+*.root binary
+*.png binary
+*.joblib binary
+*.pt binary
+*.pkl binary
+*.onnx binary

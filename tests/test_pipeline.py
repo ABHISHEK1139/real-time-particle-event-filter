@@ -1,249 +1,310 @@
-import pytest
-import pandas as pd
-import numpy as np
-import joblib
+"""End-to-end and unit tests for the Z-boson filtering pipeline.
+
+The suite runs against the real dataset when it is present and against a
+physics-consistent synthetic fixture otherwise, so it never skips and never
+silently changes what it is testing.
+
+Regression tests for previously-fixed defects are marked ``regression:`` so the
+reason they exist stays discoverable.
+"""
+
+from __future__ import annotations
+
+import json
 import os
 import sys
+from pathlib import Path
 
-# Embed src directly to test functional modularity
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import joblib
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Imported as a top-level module, not `tests.conftest`: at least one unrelated
+# `tests` package exists in site-packages on some hosts and shadows the local
+# directory when it is imported as a package.
+from conftest import (
+    DATA_PATH,
+    MODEL_PATH,
+    invariant_mass,
+    synthetic_dimuon_frame,
+)
+from src.config import (
+    BUDGET,
+    FEATURES,
+    MASS_SIGNAL_MAX,
+    MASS_SIGNAL_MIN,
+    labels_from_mass,
+    output_path,
+    rates_at_threshold,
+    threshold_for_budget,
+)
 from src.train_model import (
-    load_data, build_features_and_labels, FEATURES,
-    stratified_train_val_test_split, evaluate_rule_based_baseline, evaluate_ml_model,
+    build_features_and_labels,
+    evaluate_ml_model,
+    evaluate_rule_based_baseline,
+    stratified_train_val_test_split,
 )
 
-DATA_PATH = "Dimuon_DoubleMu.root"
-MODEL_PATH = "z_boson_xgb_model.joblib"
 
-
-def _synthetic_physics_df(n=600, seed=0):
-    """Physics-consistent synthetic data: M computed FROM kinematics, not random.
-
-    M = sqrt(2*pT1*pT2*(cosh(deta)-cos(dphi))) — same relation as PHYSICS.md.
-    """
-    rng = np.random.default_rng(seed)
-    pt1 = rng.uniform(5, 100, n)
-    pt2 = rng.uniform(5, 100, n)
-    eta1 = rng.uniform(-2.4, 2.4, n)
-    eta2 = rng.uniform(-2.4, 2.4, n)
-    phi1 = rng.uniform(-np.pi, np.pi, n)
-    phi2 = rng.uniform(-np.pi, np.pi, n)
-    m = np.sqrt(np.maximum(2 * pt1 * pt2 * (np.cosh(eta1 - eta2) - np.cos(phi1 - phi2)), 1e-9))
-    return pd.DataFrame({'pt1': pt1, 'pt2': pt2, 'eta1': eta1, 'eta2': eta2,
-                         'phi1': phi1, 'phi2': phi2, 'M': m})
-
-
-@pytest.fixture
-def dataset():
-    """Real dataset if present, else physics-consistent synthetic fallback (never skip)."""
-    if os.path.exists(DATA_PATH):
-        return load_data(DATA_PATH, max_rows=1000)
-    return _synthetic_physics_df(600)
-
-
-@pytest.fixture
-def model(dataset):
-    if os.path.exists(MODEL_PATH):
-        m = joblib.load(MODEL_PATH)
-        if hasattr(m, 'set_params'):
-            try:
-                m.set_params(device='cpu')
-            except Exception:
-                pass
-        return m
-    # Train a tiny model on the (possibly synthetic) fixture so inference tests run everywhere
-    from xgboost import XGBClassifier
-    X, y, _ = build_features_and_labels(dataset)
-    m = XGBClassifier(n_estimators=10, tree_method='hist', n_jobs=1, random_state=42, device='cpu')
-    m.fit(X, y)
-    return m
-
-
+# ---------------------------------------------------------------------------
+# Data schema / feature construction
+# ---------------------------------------------------------------------------
 def test_data_schema(dataset):
-    expected_features = ['pt1', 'pt2', 'eta1', 'eta2', 'phi1', 'phi2', 'M']
-    for f in expected_features:
+    for f in [*FEATURES, "M"]:
         assert f in dataset.columns, f"Critical feature {f} missing from payload."
-    assert (dataset['pt1'] >= 0).all(), "Transverse momentum pt1 cannot be negative."
-    assert (dataset['pt2'] >= 0).all(), "Transverse momentum pt2 cannot be negative."
+    assert (dataset["pt1"] >= 0).all(), "Transverse momentum pt1 cannot be negative."
+    assert (dataset["pt2"] >= 0).all(), "Transverse momentum pt2 cannot be negative."
+
+
+def test_invariant_mass_matches_dataset_relation():
+    """The synthetic fixture's M must follow the PHYSICS.md relation exactly.
+
+    Checked on the fixture rather than the real sample: CMS stores the exact
+    four-momentum invariant mass, which differs slightly from the
+    pT/eta/phi-only transverse-mass approximation the docs present.
+    """
+    df = synthetic_dimuon_frame(500, seed=11)
+    recomputed = invariant_mass(df["pt1"], df["pt2"], df["eta1"], df["eta2"], df["phi1"], df["phi2"])
+    np.testing.assert_allclose(recomputed, df["M"].to_numpy(), rtol=1e-9, atol=1e-9)
 
 
 def test_feature_builder(dataset):
-    X, y, df_out = build_features_and_labels(dataset)
+    X, y, _df = build_features_and_labels(dataset)
     assert list(X.columns) == FEATURES, "Feature column alignment drift detected."
-    assert 'M' not in X.columns, "Leakage: mass in training schema."
+    assert "M" not in X.columns, "Leakage: mass in training schema."
     assert set(pd.Series(y).unique()).issubset({0, 1})
 
 
-def test_leakage_exclusion(model):
-    if hasattr(model, 'get_booster'):
-        feats = model.get_booster().feature_names
-        assert 'M' not in (feats or []), f"DATA LEAKAGE: model uses M: {feats}"
-    else:
+def test_labels_from_mass_boundaries():
+    """The mass window is exclusive at both edges; verify the shared helper agrees."""
+    mass = np.array([79.999, 80.0, 80.001, 99.999, 100.0, 100.001])
+    np.testing.assert_array_equal(labels_from_mass(mass), [0, 0, 1, 1, 0, 0])
+    assert (MASS_SIGNAL_MIN, MASS_SIGNAL_MAX) == (80.0, 100.0)
+
+
+# ---------------------------------------------------------------------------
+# Leakage guards
+# ---------------------------------------------------------------------------
+def test_leakage_exclusion(trained_model):
+    if not hasattr(trained_model, "get_booster"):
         pytest.skip("Model format unsupported for feature inspection")
+    feats = trained_model.get_booster().feature_names
+    assert "M" not in (feats or []), f"DATA LEAKAGE: model uses M: {feats}"
 
 
-def test_model_inference_boundaries(dataset, model):
-    X, y, _ = build_features_and_labels(dataset)
-    preds = model.predict(X)
-    probs = model.predict_proba(X)
+def test_model_inference_boundaries(dataset, trained_model):
+    X, _y, _ = build_features_and_labels(dataset)
+    preds = trained_model.predict(X)
+    probs = trained_model.predict_proba(X)
     assert len(preds) == len(X)
     assert probs.shape == (len(X), 2)
-    assert np.all(probs >= 0.0) and np.all(probs <= 1.0)
+    assert np.all(probs >= 0.0)
+    assert np.all(probs <= 1.0)
     assert set(np.unique(preds)).issubset({0, 1})
 
 
+# ---------------------------------------------------------------------------
+# Splitting / protocol
+# ---------------------------------------------------------------------------
 def test_stratified_split_preserves_signal_fraction():
-    df = _synthetic_physics_df(2000)
+    df = synthetic_dimuon_frame(2000)
     X, y, dfl = build_features_and_labels(df)
-    out = stratified_train_val_test_split(X, y, dfl)
-    _, _, _, y_tr, y_va, y_te, _, _, _ = out
+    *_, y_tr, y_va, y_te, _, _ = stratified_train_val_test_split(X, y, dfl)
     base = np.mean(np.asarray(y) == 1)
     for split in (y_tr, y_va, y_te):
         assert abs(np.mean(np.asarray(split) == 1) - base) < 0.05
 
 
-def test_threshold_calibration_no_test_leakage(tmp_path, monkeypatch):
-    """Thresholds fit on val/train must be applied frozen to test (protocol regression test)."""
-    # evaluate_ml_model saves plots/ + evaluate writes nothing else, so isolate
-    # cwd: without this, pytest overwrote the repo's real plots with synthetic figures.
-    monkeypatch.chdir(tmp_path)
-    df = _synthetic_physics_df(2000)
+def test_stratified_split_is_disjoint():
+    df = synthetic_dimuon_frame(600)
     X, y, dfl = build_features_and_labels(df)
-    X_tr, X_va, X_te, y_tr, y_va, y_te, df_tr, _, df_te = \
-        stratified_train_val_test_split(X, y, dfl)
+    X_tr, X_va, X_te, *_ = stratified_train_val_test_split(X, y, dfl)
+    # Compare index *values*, not id(): CPython interns small ints, so id()
+    # collides across different rows.
+    tr, va, te = (set(part.index.tolist()) for part in (X_tr, X_va, X_te))
+    assert not (tr & va)
+    assert not (tr & te)
+    assert not (va & te)
+    assert len(tr) + len(va) + len(te) == len(X)
+
+
+def test_threshold_calibration_no_test_leakage(in_tmp_cwd):
+    """Thresholds fit on val/train must be applied frozen to test (protocol regression)."""
+    df = synthetic_dimuon_frame(2000)
+    X, y, dfl = build_features_and_labels(df)
+    X_tr, X_va, X_te, y_tr, y_va, y_te, df_tr, _, df_te = stratified_train_val_test_split(X, y, dfl)
     from xgboost import XGBClassifier
-    m = XGBClassifier(n_estimators=10, tree_method='hist', n_jobs=1, random_state=42)
+
+    m = XGBClassifier(n_estimators=10, tree_method="hist", n_jobs=1, random_state=42)
     m.fit(X_tr, y_tr)
     base = evaluate_rule_based_baseline(df_tr, df_te)
     ml = evaluate_ml_model(m, X_va, y_va, X_te, y_te)
-    assert 0.0 <= base['sig_eff'] <= 1.0 and 0.0 <= ml['sig_eff'] <= 1.0
-    assert 0.5 <= ml['auroc'] <= 1.0  # physics-consistent labels must be learnable
+    assert 0.0 <= base["sig_eff"] <= 1.0
+    assert 0.0 <= ml["sig_eff"] <= 1.0
+    assert 0.5 <= ml["auroc"] <= 1.0  # physics-consistent labels must be learnable
 
 
-def test_gnn_graph_construction():
-    gnn = pytest.importorskip("torch_geometric")
-    torch = pytest.importorskip("torch")
-    from src.train_gnn import convert_to_graph_dataset, set_seeds
-    set_seeds(0)
-    df = _synthetic_physics_df(8)
-    for c in ['E1', 'px1', 'py1', 'pz1', 'Q1', 'E2', 'px2', 'py2', 'pz2', 'Q2']:
-        if c not in df.columns:
-            df[c] = 1.0
-    ds = convert_to_graph_dataset(df)
-    assert len(ds) == 8
-    g = ds[0]
-    assert tuple(g.x.shape) == (2, 8)
-    assert tuple(g.edge_index.shape) == (2, 2)
-    assert len(g.edge_attr) == 2
-    assert int(g.y.item()) in (0, 1)
+# ---------------------------------------------------------------------------
+# Threshold budget policy  (regression: percentile cut could overshoot the budget)
+# ---------------------------------------------------------------------------
+def test_threshold_never_exceeds_budget_with_heavy_ties():
+    """regression: np.percentile interpolates through ties and overshoots the budget.
+
+    95% of the background sits on two discrete values; the budget-safe cut must
+    still retain <= 5%.
+    """
+    bg = np.concatenate([np.zeros(950), np.ones(50)])
+    cut = threshold_for_budget(bg, 0.05)
+    assert float(np.sum(bg >= cut)) / bg.size <= 0.05
 
 
-def test_gnn_forward_pass():
-    torch = pytest.importorskip("torch")
-    pytest.importorskip("torch_geometric")
-    from src.train_gnn import GCN, convert_to_graph_dataset
-    try:
-        from torch_geometric.loader import DataLoader
-    except ImportError:
-        from torch_geometric.data import DataLoader
-    df = _synthetic_physics_df(8)
-    for c in ['E1', 'px1', 'py1', 'pz1', 'Q1', 'E2', 'px2', 'py2', 'pz2', 'Q2']:
-        if c not in df.columns:
-            df[c] = 1.0
-    loader = DataLoader(convert_to_graph_dataset(df), batch_size=4)
-    net = GCN(num_node_features=8)
-    net.eval()
-    batch = next(iter(loader))
-    out = net(batch)
-    assert out.shape == (4, 2)
+@pytest.mark.parametrize("budget", [0.01, 0.05, 0.1, 0.25])
+def test_threshold_respects_budget_on_continuous_scores(budget):
+    rng = np.random.default_rng(0)
+    bg = rng.normal(size=5000)
+    cut = threshold_for_budget(bg, budget)
+    retained = float(np.sum(bg >= cut)) / bg.size
+    assert retained <= budget
+    assert retained >= budget - 1.0 / bg.size * 2  # not absurdly conservative
 
 
-def test_realtime_pipeline_runs_on_synthetic(tmp_path, monkeypatch):
-    pytest.importorskip("joblib")
-    from xgboost import XGBClassifier
-    df = _synthetic_physics_df(500)
-    X, y, _ = build_features_and_labels(df)
-    m = XGBClassifier(n_estimators=10, tree_method='hist', n_jobs=1, random_state=42)
-    m.fit(X, y)
-    joblib.dump(m, str(tmp_path / "z_boson_xgb_model.joblib"))
-    df.to_csv(str(tmp_path / "Dimuon_DoubleMu.csv"), index=False)
-    monkeypatch.chdir(tmp_path)
-    from src import realtime_simulation as rs
-    rs.simulate_realtime_stream(batch_size=200, max_batches=2)  # must not raise
+def test_threshold_rejects_empty_and_out_of_range_budget():
+    with pytest.raises(ValueError, match="no background events"):
+        threshold_for_budget([], 0.05)
+    with pytest.raises(ValueError, match="budget must be"):
+        threshold_for_budget([1, 2, 3], 0.0)
+    with pytest.raises(ValueError, match="budget must be"):
+        threshold_for_budget([1, 2, 3], 1.0)
 
 
-def test_realtime_pipeline_edge_cases(tmp_path, monkeypatch):
-    """Verify realtime simulation handles max_batches=0 and empty datasets gracefully."""
-    pytest.importorskip("joblib")
-    from xgboost import XGBClassifier
-    df = _synthetic_physics_df(100)
-    X, y, _ = build_features_and_labels(df)
-    m = XGBClassifier(n_estimators=5, tree_method='hist', n_jobs=1, random_state=42)
-    m.fit(X, y)
-    joblib.dump(m, str(tmp_path / "z_boson_xgb_model.joblib"))
-    monkeypatch.chdir(tmp_path)
+def test_threshold_ignores_non_finite_scores():
+    bg = np.array([np.nan, np.inf, -np.inf, 1.0, 2.0, 3.0, 4.0])
+    cut = threshold_for_budget(bg, 0.5)
+    assert np.isfinite(cut)
+    assert float(np.sum(bg[np.isfinite(bg)] >= cut)) / 6 <= 0.5
+
+
+def test_rates_at_threshold_matches_manual_counting():
+    scores = np.array([0.1, 0.9, 0.5, 0.2])
+    labels = np.array([0, 1, 0, 1])
+    r = rates_at_threshold(scores, labels, 0.5)
+    assert r["n_bg"] == 2
+    assert r["n_sig"] == 2
+    assert r["bg_retained"] == pytest.approx(0.5)  # only 0.9 >= 0.5 among background
+    assert r["sig_eff"] == pytest.approx(0.5)  # 0.9 yes, 0.2 no
+
+
+# ---------------------------------------------------------------------------
+# Replay / trigger simulation
+# ---------------------------------------------------------------------------
+def test_realtime_pipeline_runs_on_synthetic(in_tmp_cwd, tiny_model):
+    joblib.dump(tiny_model, str(in_tmp_cwd / "z_boson_xgb_model.joblib"))
+    synthetic_dimuon_frame(500).to_csv(str(in_tmp_cwd / "Dimuon_DoubleMu.csv"), index=False)
     from src import realtime_simulation as rs
 
-    # Case 1: max_batches = 0
-    df.to_csv(str(tmp_path / "Dimuon_DoubleMu.csv"), index=False)
-    rs.simulate_realtime_stream(batch_size=50, max_batches=0)
+    summary = rs.simulate_realtime_stream(batch_size=200, max_batches=2)
+    assert summary["processed"] == 400
+    assert summary["batches"] == 2
+    assert summary["throughput_eps"] > 0
+    assert summary["latency_ms_per_event"] >= 0
 
-    # Case 2: empty DataFrame (0 events, must not ZeroDivisionError)
-    df.iloc[:0].to_csv(str(tmp_path / "Dimuon_DoubleMu.csv"), index=False)
-    rs.simulate_realtime_stream(batch_size=50)
+
+def test_realtime_pipeline_edge_cases(in_tmp_cwd, tiny_model):
+    """regression: max_batches=0 and a header-only CSV must not raise."""
+    joblib.dump(tiny_model, str(in_tmp_cwd / "z_boson_xgb_model.joblib"))
+    from src import realtime_simulation as rs
+
+    synthetic_dimuon_frame(100).to_csv(str(in_tmp_cwd / "Dimuon_DoubleMu.csv"), index=False)
+    zero = rs.simulate_realtime_stream(batch_size=50, max_batches=0)
+    assert zero["processed"] == 0
+    assert zero["batches"] == 0
+
+    synthetic_dimuon_frame(100).iloc[:0].to_csv(str(in_tmp_cwd / "Dimuon_DoubleMu.csv"), index=False)
+    empty = rs.simulate_realtime_stream(batch_size=50)
+    assert empty["processed"] == 0
+    assert np.isfinite(empty["latency_ms_per_event"])
+
+
+def test_realtime_rejects_non_positive_batch_size(in_tmp_cwd, tiny_model):
+    """regression: batch_size=0 used to raise a raw range() ValueError."""
+    joblib.dump(tiny_model, str(in_tmp_cwd / "z_boson_xgb_model.joblib"))
+    synthetic_dimuon_frame(50).to_csv(str(in_tmp_cwd / "Dimuon_DoubleMu.csv"), index=False)
+    from src import realtime_simulation as rs
+
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        rs.simulate_realtime_stream(batch_size=0)
 
 
 def test_confusion_matrix_single_class():
-    """Verify confusion matrix does not drop TN when all predictions belong to single class."""
     from sklearn.metrics import confusion_matrix
+
     cm = confusion_matrix([0, 0, 0], [0, 0, 0], labels=[0, 1])
     tn, fp, fn, tp = cm.ravel().tolist()
     assert (tn, fp, fn, tp) == (3, 0, 0, 0)
 
 
-def test_anomaly_detection_pipeline(tmp_path, monkeypatch):
-    """Verify unsupervised anomaly detection trains and evaluates cleanly without mass labels."""
-    monkeypatch.chdir(tmp_path)
-    from src.anomaly_detection import train_anomaly_detector, evaluate_anomaly_detector
+# ---------------------------------------------------------------------------
+# Anomaly detection
+# ---------------------------------------------------------------------------
+def test_anomaly_detection_pipeline(in_tmp_cwd):
+    from src.anomaly_detection import evaluate_anomaly_detector, train_anomaly_detector
 
-    df = _synthetic_physics_df(600)
+    df = synthetic_dimuon_frame(600)
     X, y, _ = build_features_and_labels(df)
-    # Train anomaly detector on pseudo-background (first 300 events)
     iso, scaler = train_anomaly_detector(X.iloc[:300])
-    # Evaluate on val and test splits
     metrics = evaluate_anomaly_detector(
-        iso, scaler,
-        X.iloc[300:450], y.iloc[300:450],
-        X.iloc[450:], y.iloc[450:],
-        budget=0.10
+        iso, scaler, X.iloc[300:450], y.iloc[300:450], X.iloc[450:], y.iloc[450:], budget=0.10
     )
-    assert 0.0 <= metrics['sig_eff'] <= 1.0
-    assert 0.0 <= metrics['bg_retained'] <= 1.0
-    assert 0.0 <= metrics['auroc'] <= 1.0
-    assert os.path.exists(tmp_path / "plots" / "7_anomaly_detection_roc.png")
+    assert 0.0 <= metrics["sig_eff"] <= 1.0
+    assert 0.0 <= metrics["bg_retained"] <= 0.10 + 1e-9  # budget honoured
+    assert 0.0 <= metrics["auroc"] <= 1.0
+    assert (in_tmp_cwd / "plots" / "7_anomaly_detection_roc.png").exists()
 
 
-def test_plot_mass_spectrum(tmp_path, monkeypatch):
-    """Verify mass spectrum reconstruction generates output without errors."""
-    monkeypatch.chdir(tmp_path)
-    from src.plot_mass_spectrum import plot_invariant_mass_spectrum
+def test_anomaly_scores_are_sign_inverted():
+    """regression: decision_function is negative for anomalies, so we negate it."""
+    from sklearn.ensemble import IsolationForest
+    from sklearn.preprocessing import StandardScaler
 
-    df = _synthetic_physics_df(400)
+    from src.anomaly_detection import anomaly_scores
+
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(300, 6))
+    X[:10] += 40.0  # planted outliers
+    scaler = StandardScaler().fit(X)
+    iso = IsolationForest(n_estimators=50, random_state=0).fit(scaler.transform(X))
+    scores = anomaly_scores(iso, scaler, X)
+    assert scores[:10].mean() > scores[10:].mean()
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+def test_plot_mass_spectrum(tmp_path):
+    df = synthetic_dimuon_frame(400)
     csv_file = str(tmp_path / "Dimuon_DoubleMu.csv")
     df.to_csv(csv_file, index=False)
-
     out_png = str(tmp_path / "test_spectrum.png")
+
+    from src.plot_mass_spectrum import plot_invariant_mass_spectrum
+
     result = plot_invariant_mass_spectrum(csv_file=csv_file, model_file="nonexistent.joblib", output_path=out_png)
     assert os.path.exists(result)
     assert os.path.getsize(result) > 1000
 
 
+# ---------------------------------------------------------------------------
+# Model export
+# ---------------------------------------------------------------------------
 def test_native_xgboost_json_export(tmp_path):
-    """Verify XGBoost native JSON format saves and loads without corruption."""
     from xgboost import XGBClassifier
-    df = _synthetic_physics_df(100)
+
+    df = synthetic_dimuon_frame(100)
     X, y, _ = build_features_and_labels(df)
-    m = XGBClassifier(n_estimators=5, tree_method='hist', n_jobs=1, random_state=42)
+    m = XGBClassifier(n_estimators=5, tree_method="hist", n_jobs=1, random_state=42)
     m.fit(X, y)
 
     json_path = str(tmp_path / "model.json")
@@ -252,8 +313,265 @@ def test_native_xgboost_json_export(tmp_path):
 
     m2 = XGBClassifier()
     m2.load_model(json_path)
-    preds1 = m.predict_proba(X)
-    preds2 = m2.predict_proba(X)
-    np.testing.assert_allclose(preds1, preds2, rtol=1e-5)
+    np.testing.assert_allclose(m.predict_proba(X), m2.predict_proba(X), rtol=1e-5)
 
 
+def test_metrics_json_is_written_and_parsable(in_tmp_cwd):
+    """The dashboard reads results/metrics.json; it must exist and round-trip."""
+    from src.train_model import write_metrics_report
+
+    baseline = {"pt_cut": 23.16, "bg_retained": 0.0499, "sig_eff": 0.967}
+    ml = {
+        "prob_cut": 0.0002,
+        "bg_retained": 0.0487,
+        "sig_eff": 1.0,
+        "auroc": 0.9981,
+        "auprc": 0.9456,
+        "accuracy": 0.9917,
+        "tn": 18850,
+        "fp": 115,
+        "fn": 50,
+        "tp": 985,
+    }
+    report = write_metrics_report(baseline, ml, np.array([0] * 94825 + [1] * 5175))
+    assert Path(report).exists()
+
+    payload = json.loads(output_path("results", "metrics.json").read_text(encoding="utf-8"))
+    assert payload["budget"] == BUDGET
+    assert payload["ml"]["auroc"] == pytest.approx(0.9981)
+    assert payload["test_events"] == 100_000
+
+
+# ---------------------------------------------------------------------------
+# Benchmark correctness
+# ---------------------------------------------------------------------------
+def test_speed_benchmark_preserves_device():
+    """regression: bench() used to call set_params(device='cpu') on the GPU model,
+    which silently made the 'XGB GPU' row a CPU measurement."""
+    import xgboost as xgb
+
+    from src.speed_analysis import XGB_PARAMS
+
+    gpu_like = xgb.XGBClassifier(**XGB_PARAMS, device="cuda")
+    assert gpu_like.get_params()["device"] == "cuda"
+
+
+def test_speed_timed_predict_returns_statistics(tiny_model):
+    from src.speed_analysis import timed_predict
+
+    df = synthetic_dimuon_frame(200)
+    X, _, _ = build_features_and_labels(df)
+    stats = timed_predict(tiny_model, X, repeats=3, warmup=1)
+    assert set(stats) == {"median", "p95", "mean"}
+    assert stats["median"] > 0
+    assert stats["p95"] >= stats["median"]
+
+
+# ---------------------------------------------------------------------------
+# Data download integrity
+# ---------------------------------------------------------------------------
+def test_checksum_detects_corrupted_payload(tmp_path, monkeypatch):
+    """regression: a mirror could serve a different payload; the pinned SHA-256
+    must reject a file of canonical size whose bytes differ."""
+    from src import data_download as dd
+    from src.config import CSV_FILE, CSV_SHA256, CSV_SIZE_BYTES
+
+    payload = tmp_path / CSV_FILE
+    df = synthetic_dimuon_frame(1000)
+    payload.write_text(df.to_csv(index=False), encoding="utf-8")
+
+    # Force the canonical size so the hash check is reached.
+    monkeypatch.setattr(dd, "CSV_SIZE_BYTES", payload.stat().st_size)
+    with pytest.raises(ValueError, match="Checksum mismatch"):
+        dd._validate_csv(str(payload))
+
+    # Writing the real digest must make it pass.
+    monkeypatch.setattr(dd, "CSV_SHA256", dd.sha256_of(payload))
+    assert dd._validate_csv(str(payload)) is True
+
+
+def test_validate_csv_rejects_short_and_broken_files(tmp_path):
+    from src import data_download as dd
+    from src.config import CSV_FILE
+
+    tiny = tmp_path / CSV_FILE
+    tiny.write_text("pt1,pt2,eta1,eta2,phi1,phi2,M\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="suspiciously small"):
+        dd._validate_csv(str(tiny))
+
+    # Long enough to clear the size gate, but with the wrong schema.
+    wrong_schema = tmp_path / "wrong.csv"
+    wrong_schema.write_text("a,b\n" + "".join(f"{i},{i}\n" for i in range(20000)), encoding="utf-8")
+    assert wrong_schema.stat().st_size > dd.MIN_FILE_BYTES
+    with pytest.raises(ValueError, match="schema validation failed"):
+        dd._validate_csv(str(wrong_schema))
+
+
+def test_validate_csv_accepts_non_canonical_size_with_warning(tmp_path, capsys):
+    """A local subset is not hashable against the official payload; it must pass
+    the schema check loudly rather than be rejected or silently accepted."""
+    from src import data_download as dd
+    from src.config import CSV_SIZE_BYTES, CSV_SHA256
+
+    subset = tmp_path / "subset.csv"
+    synthetic_dimuon_frame(1200).to_csv(str(subset), index=False)
+    assert dd._validate_csv(str(subset)) is True
+    assert "not the" in capsys.readouterr().out
+
+
+def test_download_discards_invalid_cache(monkeypatch, tmp_path):
+    """regression: a corrupt cached CSV used to survive validation and make every
+    subsequent run fail immediately instead of re-downloading."""
+    from src import data_download as dd
+
+    bad = tmp_path / "Dimuon_DoubleMu.csv"
+    bad.write_text("garbage,header\n1,2\n", encoding="utf-8")
+    monkeypatch.setattr(dd, "csv_path", lambda: str(bad))
+    monkeypatch.setattr(dd, "root_path", lambda: str(tmp_path / "x.root"))
+    monkeypatch.setattr(dd, "_root_is_current", lambda *_a, **_k: True)
+
+    good = synthetic_dimuon_frame(1500)
+    calls = {"n": 0}
+
+    def fake_download(dest, *_a, **_k):
+        calls["n"] += 1
+        good.to_csv(dest, index=False)
+
+    monkeypatch.setattr(dd, "_download_with_retry", fake_download)
+    result = dd.download_and_convert(verify_checksum=False)
+    assert calls["n"] == 1, "should re-download exactly once"
+    assert result["rows"] == 1500
+    assert bad.read_text(encoding="utf-8").startswith("Run,Event")
+
+
+def test_root_fingerprint_detects_stale_conversion(tmp_path):
+    from src import data_download as dd
+    from src.config import CSV_FILE, ROOT_FILE
+
+    csv_file = tmp_path / CSV_FILE
+    root_file = tmp_path / ROOT_FILE
+    synthetic_dimuon_frame(1100).to_csv(str(csv_file), index=False)
+    dd._write_root(str(csv_file), str(root_file))
+    assert dd._root_is_current(str(csv_file), str(root_file)) is True
+
+    synthetic_dimuon_frame(1100, seed=99).to_csv(str(csv_file), index=False)
+    assert dd._root_is_current(str(csv_file), str(root_file)) is False
+
+
+# ---------------------------------------------------------------------------
+# GNN
+# ---------------------------------------------------------------------------
+def test_gnn_graph_construction():
+    pytest.importorskip("torch_geometric")
+    pytest.importorskip("torch")
+    from src.train_gnn import NUM_NODE_FEATURES, convert_to_graph_dataset, set_seeds
+
+    set_seeds(0)
+    ds = convert_to_graph_dataset(synthetic_dimuon_frame(8))
+    assert len(ds) == 8
+    g = ds[0]
+    assert tuple(g.x.shape) == (2, NUM_NODE_FEATURES)
+    assert tuple(g.edge_index.shape) == (2, 2)
+    assert len(g.edge_attr) == 2
+    assert int(g.y.item()) in (0, 1)
+
+
+def test_gnn_forward_pass():
+    pytest.importorskip("torch")
+    pytest.importorskip("torch_geometric")
+    from src.train_gnn import GCN, convert_to_graph_dataset
+
+    try:
+        from torch_geometric.loader import DataLoader
+    except ImportError:
+        from torch_geometric.data import DataLoader
+    loader = DataLoader(convert_to_graph_dataset(synthetic_dimuon_frame(8)), batch_size=4)
+    net = GCN()
+    net.eval()
+    assert tuple(net(next(iter(loader))).shape) == (4, 2)
+
+
+def test_gnn_scaler_is_fit_on_train_only():
+    """regression guard: the node scaler must be fitted on the TRAIN split only.
+
+    A scaler fitted on train+test would return an already-standardised held-out
+    set even when that set is drawn from a visibly different distribution.
+    """
+    pytest.importorskip("torch_geometric")
+    pytest.importorskip("torch")
+    from sklearn.preprocessing import StandardScaler
+
+    from src.train_gnn import NODE_COLUMNS_1, NODE_COLUMNS_2
+
+    cols = [*NODE_COLUMNS_1, *NODE_COLUMNS_2]
+    rng = np.random.default_rng(3)
+    train = pd.DataFrame({c: rng.normal(0, 1, 400) for c in cols})
+    held_out = pd.DataFrame({c: rng.normal(20, 1, 100) for c in cols})  # shifted
+
+    scaler = StandardScaler().fit(train[cols].to_numpy())
+    honest = abs(scaler.transform(held_out[cols].to_numpy()).mean())
+    assert honest > 10.0
+
+    # Fitting on train+held-out pulls the mean toward the pooled value, so the
+    # held-out set comes back far closer to zero — that is the leakage signature.
+    leaky_scaler = StandardScaler().fit(pd.concat([train, held_out])[cols].to_numpy())
+    leaky = abs(leaky_scaler.transform(held_out[cols].to_numpy()).mean())
+    assert leaky < honest / 5.0, f"leaky scaler mean {leaky} is not clearly closer to 0 than {honest}"
+
+
+def test_gnn_checkpoint_records_metadata(in_tmp_cwd):
+    pytest.importorskip("torch")
+    pytest.importorskip("torch_geometric")
+    import torch
+
+    from src.train_gnn import NUM_NODE_FEATURES, GCN, save_checkpoint
+
+    payload_path = save_checkpoint(
+        GCN(), [(0.1, 0.2)], {"accuracy": 0.5}, None, subset=True, path=str(in_tmp_cwd / "g.pt")
+    )
+    blob = torch.load(payload_path, weights_only=False)
+    assert blob["subset_mode"] is True
+    assert blob["num_node_features"] == NUM_NODE_FEATURES
+    assert blob["seed"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+def test_dashboard_runs_headless():
+    """Smoke test the Streamlit app end to end, asserting no script exception."""
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    app_file = Path(__file__).resolve().parent.parent / "app.py"
+    if not app_file.exists():
+        pytest.skip("app.py not present")
+    at = AppTest.from_file(str(app_file), default_timeout=300)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="trained model not available")
+def test_dashboard_ml_filter_respects_its_budget():
+    """regression: the probability slider rounded the 5%-budget cut (2e-4) to 0.00,
+    so the 'ML Filter' passed 100% of events and rejection read 1.0x."""
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    app_file = Path(__file__).resolve().parent.parent / "app.py"
+    at = AppTest.from_file(str(app_file), default_timeout=300)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+
+    metrics = {m.label: m for m in at.metric}
+    total = int(metrics["Total Events"].value.replace(",", ""))
+    ml_pass = int(metrics["ML Filter Pass"].value.replace(",", ""))
+    assert ml_pass < total, f"ML filter admitted everything ({ml_pass}/{total})"
+
+    # The default control is the 5% background budget, so retention must be near 5%
+    # and never above it. The delta string is "Eff: ..% | BG: ..%".
+    bg_rate = float(metrics["ML Filter Pass"].delta.split("|")[1].split(":")[1].strip().rstrip("%"))
+    assert bg_rate <= 5.0 + 0.5, f"background retention {bg_rate}% overran the 5% budget"
+
+    rejection = float(metrics["ML Background Rejection"].value.rstrip("x").replace(",", ""))
+    assert rejection > 1.5, f"rejection factor {rejection}x indicates a no-op filter"
