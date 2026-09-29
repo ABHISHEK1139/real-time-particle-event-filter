@@ -16,10 +16,6 @@ permissions:
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  # CI uses a local physics-consistent fixture instead of the 14 MB official
-  # payload, so the pinned SHA-256 cannot apply. The scripts size-gate the
-  # checksum themselves; this just states the intent explicitly.
-  CERNDATA_VERIFY_CHECKSUM: "0"
 
 jobs:
   lint:
@@ -67,14 +63,15 @@ jobs:
           pip install -r requirements-dev.txt \
             --extra-index-url https://download.pytorch.org/whl/cpu
 
-      - name: Generate physics-consistent mock dataset
-        # M is COMPUTED from kinematics via the invariant-mass relation, so the
-        # label structure matches production. The old CI fixture drew a random
-        # M unrelated to pt/eta/phi, which only proved "code runs".
-        run: python tests/make_mock_dataset.py --rows 1000 --out Dimuon_DoubleMu.csv
-
-      - name: Data ingestion + ROOT conversion
-        run: python src/data_download.py
+      - name: "Generate mock dataset and ingest it"
+        # Scoped to this step on purpose: the fixture is a 1000-row local subset,
+        # so the pinned SHA-256 for the 14 MB official payload cannot apply. This
+        # is deliberately NOT a workflow-level env var — a global setting leaks
+        # into the pytest step and silently disables the checksum path that the
+        # downloader tests assert.
+        run: |
+          CERNDATA_VERIFY_CHECKSUM=0 python tests/make_mock_dataset.py --rows 1000 --out Dimuon_DoubleMu.csv
+          CERNDATA_VERIFY_CHECKSUM=0 python src/data_download.py
 
       - name: Train supervised model
         run: python src/train_model.py

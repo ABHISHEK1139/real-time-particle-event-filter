@@ -375,9 +375,12 @@ def test_checksum_detects_corrupted_payload(tmp_path, monkeypatch):
     """regression: a mirror could serve a different payload; the pinned SHA-256
     must reject a file of canonical size whose bytes differ."""
     from src import data_download as dd
-    from src.config import CSV_FILE, CSV_SHA256, CSV_SIZE_BYTES
 
-    payload = tmp_path / CSV_FILE
+    # Hermetic: the checksum policy must not depend on ambient environment
+    # variables. CI sets CERNDATA_VERIFY_CHECKSUM=0 for the ingestion steps and
+    # that would otherwise silently skip the very check under test.
+    monkeypatch.delenv("CERNDATA_VERIFY_CHECKSUM", raising=False)
+    payload = tmp_path / "Dimuon_DoubleMu.csv"
     df = synthetic_dimuon_frame(1000)
     payload.write_text(df.to_csv(index=False), encoding="utf-8")
 
@@ -389,6 +392,17 @@ def test_checksum_detects_corrupted_payload(tmp_path, monkeypatch):
     # Writing the real digest must make it pass.
     monkeypatch.setattr(dd, "CSV_SHA256", dd.sha256_of(payload))
     assert dd._validate_csv(str(payload)) is True
+
+
+def test_validate_csv_respects_checksum_opt_out(tmp_path, monkeypatch, capsys):
+    """CERNDATA_VERIFY_CHECKSUM=0 must skip the hash check and say so."""
+    from src import data_download as dd
+
+    monkeypatch.setenv("CERNDATA_VERIFY_CHECKSUM", "0")
+    subset = tmp_path / "subset.csv"
+    synthetic_dimuon_frame(1200).to_csv(str(subset), index=False)
+    assert dd._validate_csv(str(subset)) is True
+    assert "Checksum verification disabled" in capsys.readouterr().out
 
 
 def test_validate_csv_rejects_short_and_broken_files(tmp_path):
@@ -408,12 +422,14 @@ def test_validate_csv_rejects_short_and_broken_files(tmp_path):
         dd._validate_csv(str(wrong_schema))
 
 
-def test_validate_csv_accepts_non_canonical_size_with_warning(tmp_path, capsys):
+def test_validate_csv_accepts_non_canonical_size_with_warning(tmp_path, monkeypatch, capsys):
     """A local subset is not hashable against the official payload; it must pass
     the schema check loudly rather than be rejected or silently accepted."""
     from src import data_download as dd
-    from src.config import CSV_SIZE_BYTES, CSV_SHA256
 
+    # See the note in test_checksum_detects_corrupted_payload: keep this test
+    # independent of the ambient CERNDATA_VERIFY_CHECKSUM setting.
+    monkeypatch.delenv("CERNDATA_VERIFY_CHECKSUM", raising=False)
     subset = tmp_path / "subset.csv"
     synthetic_dimuon_frame(1200).to_csv(str(subset), index=False)
     assert dd._validate_csv(str(subset)) is True
