@@ -32,23 +32,26 @@ htmlcov/
 # attribution convention it records is the maintainer's, not a repo rule.
 .gitmessage
 
-# --- Trained model binaries ---
-# Compiled weights are reproducible from src/data_download.py + src/train_model.py
-# and are not versioned; see MODEL.md. Note that *.joblib is NOT tracked even
-# though an older copy existed in the working tree.
-*.joblib
-*.pt
+# --- Trained model binaries: TRACKED ---
+# These are committed so a clone can run inference and the dashboard without
+# retraining. Regenerate with: python src/train_model.py && python src/anomaly_detection.py
+# Transient/alternate formats are still ignored.
 *.onnx
 *.pkl
-models/
+*.h5
+*.parquet
+*.npz
+*.feather
+*.ckpt
+*.dill
 
 # --- Datasets ---
-# Dimuon_DoubleMu.csv is deliberately un-ignored: it is the official CERN
-# educational sample the README documents and CI validates against. The derived
-# ROOT copy and the checksum sidecar are build outputs and stay ignored.
-*.root
+# Both the official CERN CSV and the derived ROOT TTree are tracked, so the
+# project is reproducible from a clone with no network access and no build step.
+# The checksum sidecar is a local cache and stays ignored.
 *.root.fingerprint
 !Dimuon_DoubleMu.csv
+!Dimuon_DoubleMu.root
 
 # --- Transient outputs ---
 logs/*.tmp
