@@ -1,10 +1,29 @@
 # Model Reproduction & Output Binding
 
-Compiled model binaries (`.joblib`, `.pt`, `.onnx`, `models/`) and derived data
-(`.root`, the checksum sidecar) are deliberately **excluded from this Git
-repository** to keep it small. Every one of them is reproducible from source.
-`Dimuon_DoubleMu.csv` *is* tracked, because it is the official CERN educational
-sample the README and CI validate against.
+The trained artifacts and the derived ROOT file **are** committed, so a fresh
+clone is immediately usable — inference, the replay benchmark and the dashboard
+all run with no training step and no network access:
+
+- `z_boson_xgb_model.joblib` · `models/z_boson_xgb_model.json` ·
+  `models/anomaly_detector.joblib` · `models/gnn_prototype.pt`
+- `Dimuon_DoubleMu.csv` (official CERN educational sample) and the derived
+  `Dimuon_DoubleMu.root`
+
+Total tracked payload is ~22 MB, so nothing here needs Git LFS.
+
+## Regenerating everything from scratch
+
+Nothing above has to be trusted blindly; each artifact is reproducible:
+
+```bash
+pip install -r requirements-dev.txt
+python src/data_download.py              # fetch + SHA-256 verify the CSV, write the ROOT copy
+python src/train_model.py                # supervised XGBoost -> joblib + models/*.json + results/
+python src/anomaly_detection.py          # unsupervised Isolation Forest
+python src/train_gnn.py --full --epochs 10   # graph neural network
+```
+
+The GNN extra is optional: `pip install "torch>=2.0" "torch-geometric>=2.3"`.
 
 ## Quick start
 

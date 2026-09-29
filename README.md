@@ -148,12 +148,15 @@ Last measured on an NVIDIA RTX 3050 Laptop GPU (XGBoost 3.4.1, CPU inference via
 │   ├── conftest.py           # Repo-anchored fixtures + physics-consistent data generation
 │   ├── make_mock_dataset.py  # Stand-in dataset generator (used by CI)
 │   └── test_pipeline.py      # 39 automated tests, including regression tests for fixed defects
-├── models/                   # Generated at run time (git-ignored)
+├── models/                   # Trained artifacts (tracked — ready to use after clone)
 ├── plots/                    # Generated figures (committed for the README)
 └── results/                  # metrics.md / metrics.json written by the training scripts
 ```
 
-`models/`, `*.joblib` and `*.pt` are git-ignored: they are reproducible from `src/data_download.py` + `src/train_model.py`. See [`MODEL.md`](MODEL.md).
+The trained artifacts (`z_boson_xgb_model.joblib`, `models/*.joblib`, `models/*.pt`,
+`models/*.json`) **and** the derived `Dimuon_DoubleMu.root` are committed, so a
+clone can run inference, the replay benchmark and the dashboard immediately —
+no training, no download, no network. See [`MODEL.md`](MODEL.md) to regenerate them.
 
 ---
 
