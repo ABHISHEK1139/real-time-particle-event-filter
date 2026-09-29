@@ -33,8 +33,20 @@ COPY requirements.txt ./
 
 # Install into the venv only. The runtime stage reuses this venv, so nothing
 # installed here leaks into the shipped image's system site-packages.
+#
+# xgboost >= 3.4 pulls `nvidia-nccl-cu13` (~345 MB of CUDA libraries) as a hard
+# dependency. This image is CPU-only by default — there is no GPU, no CUDA
+# runtime, and the GPU code paths in this repo all degrade to CPU — so that
+# weight is dead. It is removed after install and the import is re-verified, so
+# a future xgboost release that genuinely needs it at import time fails the
+# build loudly instead of shipping a broken image.
 RUN pip install --upgrade pip setuptools wheel \
- && pip install -r requirements.txt
+ && pip install -r requirements.txt \
+ && pip uninstall -y nvidia-nccl-cu13 \
+ && python -c "import xgboost, numpy; \
+m = xgboost.XGBClassifier(n_estimators=5, tree_method='hist'); \
+m.fit(numpy.random.rand(200, 6), numpy.random.randint(0, 2, 200)); \
+print('xgboost verified after CUDA trim')"
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime

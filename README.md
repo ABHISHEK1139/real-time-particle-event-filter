@@ -133,6 +133,7 @@ Last measured on an NVIDIA RTX 3050 Laptop GPU (XGBoost 3.4.1, CPU inference via
 ├── requirements-lock.txt     # Complete 79-pin lock, verified in a clean virtualenv
 ├── src/
 │   ├── config.py             # Single source of truth: constants, paths, budget-safe thresholding
+│   ├── synthetic.py          # Physics-consistent synthetic event generator (no test deps)
 │   ├── _compat.py            # UTF-8 stdout guard, artifact lookup, logging setup
 │   ├── data_download.py      # Checksum-pinned download & ROOT conversion
 │   ├── train_model.py        # Stratified 60/20/20 XGBoost + JSON/metrics export
@@ -244,6 +245,9 @@ docker run --rm -p 8501:8501 cern-zboson-ml \
 
 The image is multi-stage, runs as a non-root user (`uid 10001`), ships no dataset
 and no weights, and exposes `GET /_stcore/health` when serving the dashboard.
+The ~345 MB of CUDA libraries that `xgboost` pulls in as a hard dependency are
+stripped at build time and the import is re-verified, so a CPU-only image stays
+CPU-only.
 
 ---
 
@@ -252,6 +256,7 @@ and no weights, and exposes `GET /_stcore/health` when serving the dashboard.
 - **Portal**: [CERN Open Data Portal — CMS DoubleMu Run2011A 7 TeV (Record 5201)](https://opendata.cern.ch/record/5201)
 - **Parent Record**: [Derived Datasets from Run2011A (Record 545)](https://opendata.cern.ch/record/545)
 - **Integrity**: the payload is pinned by SHA-256 (`src.config.CSV_SHA256`) and by exact byte size. A mirror serving a different payload is rejected rather than silently trained on. Locally-trimmed subsets and the CI fixture are accepted on schema alone, with a loud warning.
+- **This is the only dataset consumed.** The pipeline reads exactly one payload, `Dimuon_DoubleMu.csv`, and `tests/test_pipeline.py` asserts that no source file references any other dataset format.
 - **License**: Dataset released under Creative Commons CC0. Project source code released under MIT License.
 
 ## ⚖️ License

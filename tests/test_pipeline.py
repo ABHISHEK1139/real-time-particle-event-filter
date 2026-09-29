@@ -644,6 +644,71 @@ def test_documented_streamlit_dependency_exists():
     assert re.search(r"^streamlit", reqs, re.MULTILINE), "streamlit missing from requirements.txt"
 
 
+def test_mock_generator_does_not_require_pytest():
+    """regression: tests/make_mock_dataset.py imported conftest, which imports
+    pytest, so generating a fixture inside the runtime-only Docker image died
+    with ModuleNotFoundError. The generator must work with pytest unimportable."""
+    import importlib.util
+    import sys
+
+    script = Path(__file__).resolve().parent / "make_mock_dataset.py"
+    saved = sys.modules.get("pytest")
+    sys.modules["pytest"] = None  # make `import pytest` fail
+    try:
+        spec = importlib.util.spec_from_file_location("_mmd_under_test", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        frame = module.make_mock_dataset(rows=64, seed=3)
+    finally:
+        if saved is None:
+            sys.modules.pop("pytest", None)
+        else:
+            sys.modules["pytest"] = saved
+
+    from src.config import MASS_COLUMN, REQUIRED_COLUMNS
+
+    assert len(frame) == 64
+    missing = set(REQUIRED_COLUMNS) - set(frame.columns)
+    assert not missing, f"fixture is missing {sorted(missing)}"
+    assert (frame["pt1"] >= 0).all()
+    assert (frame[MASS_COLUMN] > 0).all()
+
+
+def test_only_the_cern_dataset_is_consumed():
+    """regression guard: the project must train on exactly one dataset, the
+    pinned CERN record-5201 CSV. Any other bulk payload (the 2.7 GB
+    events_anomalydetection_v2.h5 sitting in Downloads) is a different
+    experiment's data and must not be silently picked up."""
+    root = Path(__file__).resolve().parent.parent
+    tracked_csv = root / "Dimuon_DoubleMu.csv"
+    assert tracked_csv.exists(), "the tracked CERN dataset is missing"
+
+    from src.config import CSV_SHA256
+
+    # The tracked file must be the canonical payload, not a substituted one.
+    from src.data_download import sha256_of
+
+    assert sha256_of(tracked_csv) == CSV_SHA256, (
+        "Dimuon_DoubleMu.csv does not match the pinned CERN record 5201 checksum"
+    )
+
+    # No source file may reach for another dataset format. Comments and docstrings
+    # are stripped first so this test does not match its own explanation.
+    import io
+    import tokenize
+
+    sources = [*root.glob("src/*.py"), root / "app.py", *root.glob("tests/*.py")]
+    for path in sources:
+        with open(path, "rb") as fh:
+            code = "".join(
+                tok.string + "\n"
+                for tok in tokenize.tokenize(io.BytesIO(fh.read()).readline)
+                if tok.type not in (tokenize.COMMENT, tokenize.STRING)
+            )
+        assert ".h5" not in code, f"{path.name} references an HDF5 payload"
+        assert "anomalydetection" not in code.lower(), f"{path.name} references a foreign dataset"
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
