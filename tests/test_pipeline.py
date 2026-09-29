@@ -637,6 +637,29 @@ def test_requirements_lock_covers_direct_dependencies():
         assert name in pinned, f"{name} is a dev dependency but is not pinned in the lock"
 
 
+def test_ci_workflow_lints_cleanly():
+    """regression: run the exact commands the CI Lint job runs.
+
+    A formatting regression once reached a red build because only `ruff check`
+    had been run locally. This executes both, against the whole tree, so the
+    suite fails in seconds instead of after a push.
+    """
+    ruff = pytest.importorskip("ruff", reason="ruff is a dev dependency")
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    for args in (["check", "."], ["format", "--check", "."]):
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"`ruff {' '.join(args)}` failed:\n{result.stdout}{result.stderr}"
+
+
 def test_documented_streamlit_dependency_exists():
     """regression: the dashboard is the headline feature and streamlit was
     absent from the requirements entirely, so it could not be installed."""
@@ -694,8 +717,7 @@ def test_only_the_cern_dataset_is_consumed():
     size = tracked_csv.stat().st_size
     if size == CSV_SIZE_BYTES:
         assert sha256_of(tracked_csv) == CSV_SHA256, (
-            "Dimuon_DoubleMu.csv is the canonical size but does not match the "
-            "pinned CERN record 5201 checksum"
+            "Dimuon_DoubleMu.csv is the canonical size but does not match the pinned CERN record 5201 checksum"
         )
     else:
         from src.config import REQUIRED_COLUMNS
