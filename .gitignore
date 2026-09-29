@@ -22,10 +22,15 @@ env/
 coverage.xml
 htmlcov/
 
-# --- Secrets / local config ---
+# --- Local config ---
 .env
 *.pem
 *.key
+
+# Personal commit-message template, installed via
+# `git config commit.template .gitmessage`. Deliberately untracked: the
+# attribution convention it records is the maintainer's, not a repo rule.
+.gitmessage
 
 # --- Trained model binaries ---
 # Compiled weights are reproducible from src/data_download.py + src/train_model.py
