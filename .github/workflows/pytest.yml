@@ -152,19 +152,23 @@ jobs:
       - name: Confirm the image is present in the local engine
         run: docker image inspect cern-zboson-ml:ci --format '{{.Id}} user={{.Config.User}} workdir={{.Config.WorkingDir}}'
 
-      # Single-line `python -c` on purpose: a multi-line quoted argument is easy
-      # to break in a `run: |` block, and a malformed command surfaces as docker
-      # exit 125 ("requires at least 1 argument") rather than a Python traceback.
-      - name: Smoke test: every entry point imports inside the image
+      # Step names are quoted: an unquoted scalar containing ": " is parsed by
+      # YAML as a nested mapping, which invalidates the whole workflow file and
+      # makes GitHub report a failure with zero jobs run.
+      - name: "Smoke test: every entry point imports inside the image"
+        # Single-line `python -c` on purpose: a multi-line quoted argument is
+        # easy to break in a `run: |` block, and a malformed command surfaces as
+        # docker exit 125 ("requires at least 1 argument") rather than a Python
+        # traceback.
         run: |
           docker run --rm cern-zboson-ml:ci python -c "import src.config, src.data_download, src.train_model, src.anomaly_detection, src.plot_mass_spectrum, src.realtime_simulation, src.speed_analysis, src.baseline_physics_cut; print('all entry points import cleanly')" 2>&1
 
-      - name: Smoke test: data volume is writable by the non-root user
+      - name: "Smoke test: data volume is writable by the non-root user"
         run: |
           docker volume create cern-data
           docker run --rm -v cern-data:/data cern-zboson-ml:ci sh -c 'touch /data/.probe && rm /data/.probe && echo "data volume writable by uid $(id -u)"' 2>&1
 
-      - name: Smoke test: pipeline CMD runs to completion on the mock dataset
+      - name: "Smoke test: pipeline CMD runs to completion on the mock dataset"
         run: |
           # Generates a local fixture so the run needs no network, then exercises
           # the image's default CMD end to end (download -> train -> anomaly -> baseline).

@@ -10,6 +10,8 @@
 # --- Test suite ---
 pytest>=7.0
 pytest-cov>=4.0
+# Used by tests/test_pipeline.py to validate the CI workflow file.
+pyyaml>=6.0
 
 # --- Lint / format ---
 ruff>=0.5

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -533,6 +534,98 @@ def test_gnn_checkpoint_records_metadata(in_tmp_cwd):
     assert blob["subset_mode"] is True
     assert blob["num_node_features"] == NUM_NODE_FEATURES
     assert blob["seed"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Repository / CI configuration
+# ---------------------------------------------------------------------------
+def test_ci_workflow_is_valid_yaml():
+    """regression: an unquoted step name containing ': ' makes the whole workflow
+    file a YAML error. GitHub then reports the run as failed with *zero jobs*,
+    so nothing runs and the reason is not obvious from the run summary."""
+    yaml = pytest.importorskip("yaml")
+    workflow = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "pytest.yml"
+    assert workflow.exists(), "CI workflow file is missing"
+
+    with open(workflow, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+
+    assert isinstance(data, dict), "workflow did not parse to a mapping"
+    # PyYAML parses the bare key `on` as boolean True (YAML 1.1 truthiness).
+    assert ("on" in data) or (True in data), "workflow has no trigger configuration"
+    assert "jobs" in data, "workflow defines no jobs"
+
+    for name, job in data["jobs"].items():
+        assert "steps" in job, f"job {name!r} has no steps"
+        for step in job["steps"]:
+            assert isinstance(step, dict), f"job {name!r} has a non-mapping step"
+            # A step needs either `uses` or `run`; the label is a name, a uses
+            # reference, or the first line of the script.
+            assert "uses" in step or "run" in step, f"job {name!r} has an inert step: {step}"
+            label = step.get("name") or step.get("uses")
+            if label is None:
+                label = next((ln for ln in step["run"].splitlines() if ln.strip()), "")
+            assert isinstance(label, str)
+            assert label.strip(), f"job {name!r} has a step whose label resolved to {label!r}"
+
+
+def test_ci_workflow_runs_the_test_suite():
+    """The workflow must invoke pytest with a bare --cov.
+
+    regression: `--cov=<file>` makes coverage resolve the file as an importable
+    module, which imports it before conftest.py and crashes NumPy with
+    "cannot load module more than once per process" -> pytest exit code 4.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "pytest.yml"
+    data = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+
+    scripts = [step["run"] for job in data["jobs"].values() for step in job["steps"] if "run" in step]
+    pytest_runs = [s for s in scripts if "pytest" in s]
+    assert pytest_runs, "the workflow never runs pytest"
+    for run in pytest_runs:
+        assert "--cov=" not in run, f"--cov=<file> breaks collection: {run!r}"
+
+
+def test_requirements_lock_covers_direct_dependencies():
+    """A 'lock' that leaves the transitive closure floating is not a lock."""
+    import re
+    from packaging.requirements import Requirement
+
+    root = Path(__file__).resolve().parent.parent
+    direct = [
+        line.strip()
+        for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    lock_text = (root / "requirements-lock.txt").read_text(encoding="utf-8")
+    pinned = set()
+    for line in lock_text.splitlines():
+        m = re.match(r"^\s*#?\s*([A-Za-z0-9._-]+)==(\S+)", line)
+        if m:
+            pinned.add(re.sub(r"[-_.]+", "-", m.group(1)).lower())
+
+    assert len(pinned) > 20, f"only {len(pinned)} pins; the transitive closure is not locked"
+    for spec in direct:
+        name = re.sub(r"[-_.]+", "-", Requirement(spec).name).lower()
+        assert name in pinned, f"{name} is a direct dependency but is not pinned in the lock"
+
+    # ruff is a dev dependency and must be pinned too.
+    dev = [
+        line.strip()
+        for line in (root / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith(("#", "-r "))
+    ]
+    for spec in dev:
+        name = re.sub(r"[-_.]+", "-", Requirement(spec).name).lower()
+        assert name in pinned, f"{name} is a dev dependency but is not pinned in the lock"
+
+
+def test_documented_streamlit_dependency_exists():
+    """regression: the dashboard is the headline feature and streamlit was
+    absent from the requirements entirely, so it could not be installed."""
+    reqs = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(encoding="utf-8")
+    assert re.search(r"^streamlit", reqs, re.MULTILINE), "streamlit missing from requirements.txt"
 
 
 # ---------------------------------------------------------------------------
