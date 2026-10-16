@@ -114,7 +114,10 @@ def convert_to_graph_dataset(df, scaler: StandardScaler | None = None) -> list[D
             x=torch.from_numpy(nodes[i]),
             edge_index=edge_index,
             edge_attr=edge_weights[i],
-            y=torch.tensor([labels[i]], dtype=torch.long),
+            # Scalar (0-dim) label: the PyG DataLoader collates these to a 1D
+            # (B,) target, which is what F.nll_loss expects. A 1-element
+            # vector here would collate to (B, 1) and crash the loss.
+            y=torch.tensor(labels[i], dtype=torch.long),
         )
         for i in range(len(df))
     ]

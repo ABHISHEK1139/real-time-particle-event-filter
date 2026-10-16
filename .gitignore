@@ -60,6 +60,9 @@ run_output.txt
 clean.txt
 *.log
 
+# --- Regenerated training artifacts (not shipped) ---
+models/*.pt
+
 # --- OS cruft ---
 .DS_Store
 Thumbs.db

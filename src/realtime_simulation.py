@@ -82,7 +82,11 @@ def _align_inference_device(model):
 
 
 def _load_payload(model_file: str = XGB_JOBLIB_FILE, csv_file: str = CSV_FILE):
-    """Load the classifier and the replay payload, with actionable error messages."""
+    """Load the classifier and the replay payload, with actionable error messages.
+
+    Security: ``joblib.load`` unpickles the artifact, so only ever load a file
+    produced by this repo's ``src/train_model.py`` — never a ``.joblib`` from
+    an untrusted source."""
     try:
         model = joblib.load(data_path(model_file))  # cwd first, repo root fallback
     except FileNotFoundError as e:

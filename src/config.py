@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # --- Experiment constants -------------------------------------------------
 FEATURES: list[str] = ["pt1", "pt2", "eta1", "eta2", "phi1", "phi2"]
@@ -91,7 +95,7 @@ MIN_ROWS = 1000
 MIN_FILE_BYTES = 100_000
 
 
-def labels_from_mass(mass: np.ndarray | pd.Series):  # noqa: F821
+def labels_from_mass(mass: np.ndarray | pd.Series):
     """Signal label: 1 inside the Z mass window, 0 outside."""
     m = np.asarray(mass, dtype=float)
     return ((m > MASS_SIGNAL_MIN) & (m < MASS_SIGNAL_MAX)).astype(int)
@@ -102,9 +106,10 @@ def threshold_for_budget(background_scores, budget: float = BUDGET) -> float:
     """Return the smallest cut whose background retention cannot exceed ``budget``.
 
     With ``n`` background calibration scores and ``allowed = floor(budget * n)``,
-    the cut is placed just above the ``allowed``-th largest score. Selection with
-    ``score >= cut`` then admits at most ``allowed`` events, so the realised
-    background rate is bounded by the budget even when scores are heavily tied.
+    the cut is placed just above the ``(allowed + 1)``-th largest score.
+    Selection with ``score >= cut`` then admits at most ``allowed`` events, so
+    the realised background rate is bounded by the budget even when scores are
+    heavily tied.
     Ties at the boundary make the realised rate *lower* than the budget, never
     higher; the realised value is always reported next to the budget.
 
@@ -121,9 +126,7 @@ def threshold_for_budget(background_scores, budget: float = BUDGET) -> float:
     if n == 0:
         raise ValueError("Cannot calibrate a threshold: no background events supplied.")
 
-    allowed = int(np.floor(budget * n))
-    if allowed >= n:  # budget so loose that everything may pass
-        return float(np.nextafter(bg.min(), -np.inf))
+    allowed = int(np.floor(budget * n))  # validation above guarantees allowed < n
     return float(np.nextafter(np.sort(bg)[n - allowed - 1], np.inf))
 
 

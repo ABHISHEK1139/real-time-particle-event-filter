@@ -87,13 +87,21 @@ def load_collision_data(max_rows: int = 100_000) -> tuple[pd.DataFrame, str]:
         missing = set(REQUIRED_COLUMNS) - set(df.columns)
         if missing:
             raise ValueError(f"{CSV_FILE} is missing required columns: {sorted(missing)}")
-        return df.dropna(), "CMS Open Data Run2011A DoubleMu"
+        # reset_index: downstream code indexes the positional score array with
+        # plot_df.index, which are labels — a gappy index from dropna() would
+        # raise IndexError on CSVs containing NaN rows.
+        return df.dropna().reset_index(drop=True), "CMS Open Data Run2011A DoubleMu"
     return _synthetic_events(), "Physics-Consistent Synthetic Fallback"
 
 
 @st.cache_resource(show_spinner=False)
 def load_ml_model():
-    """Loads the trained XGBoost classifier, pinned to CPU inference."""
+    """Loads the trained XGBoost classifier, pinned to CPU inference.
+
+    Security: ``joblib.load`` unpickles the artifact, so only ever load a file
+    produced by this repo's ``src/train_model.py`` — never a ``.joblib`` from
+    an untrusted source. For serving, the native XGBoost JSON
+    (``models/z_boson_xgb_model.json``) is the safer format."""
     model_path = data_path(XGB_JOBLIB_FILE)
     if not Path(model_path).exists():
         return None
@@ -109,7 +117,10 @@ def load_ml_model():
 
 @st.cache_resource(show_spinner=False)
 def load_anomaly_model():
-    """Loads the trained Isolation Forest anomaly detector + its scaler."""
+    """Loads the trained Isolation Forest anomaly detector + its scaler.
+
+    Security: ``joblib.load`` unpickles the artifact, so only ever load a file
+    produced by this repo's ``src/anomaly_detection.py``."""
     model_path = data_path(ANOMALY_JOBLIB_FILE)
     if not Path(model_path).exists():
         return None, None
